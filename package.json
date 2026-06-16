@@ -1,0 +1,29 @@
+{
+  "name": "ffmpeg-free-api",
+  "version": "1.0.0",
+  "description": "100% Free Rendi.dev Replacement - FFmpeg API using GitHub Actions + Cloudflare R2",
+  "type": "module",
+  "main": "api-server.js",
+  "scripts": {
+    "start": "node api-server.js",
+    "dev": "node --watch api-server.js",
+    "setup": "bash setup.sh"
+  },
+  "keywords": [
+    "ffmpeg",
+    "rendi",
+    "video",
+    "github-actions",
+    "free",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "uuid": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
