@@ -677,6 +677,331 @@ curl https://ffmpeg-api.onrender.com/v1/commands/550e8400-e29b-41d4-a716-4466554
 
 ---
 
+
+#########################################################################
+## 🚀 النشر على Render (Web Service المجاني)
+
+Render يعطيك Web Service مجاني لتشغيل السيرفر. راح نشرح كل خطوة بالتفصيل:
+
+---
+
+### 📝 المتطلبات قبل النشر
+
+تأكد من:
+- [x] المستودع `ffmpeg-free-api` موجود على GitHub
+- [x] الـ 6 مستودعات عمال جاهزة (شغلت `./setup.sh`)
+- [x] حساب Render.com مفعل
+
+---
+
+### 🎯 الخطوة 1: ربط GitHub مع Render
+
+1. **روح لـ [Render Dashboard](https://dashboard.render.com)**
+2. **اضغط:** `New +` → `Web Service`
+3. **صلاحيات GitHub:**
+   - اضغط `Connect GitHub`
+   - اختر `Only select repositories`
+   - اختر `ffmpeg-free-api`
+   - اضغط `Install & Authorize`
+4. **ابحث عن مستودعك:** اكتب `ffmpeg-free-api` → `Connect`
+
+---
+
+### ⚙️ الخطوة 2: إعدادات الخدمة
+
+املأ هذه البيانات:
+
+```
+┌─────────────────────────────────────────┐
+│ 📝 Name                                │
+│ ffmpeg-api                             │
+├─────────────────────────────────────────┤
+│ 🌍 Region                              │
+│ Frankfurt (Germany) ← الأقرب للعراق    │
+├─────────────────────────────────────────┤
+│ 🌿 Branch                              │
+│ main                                   │
+├─────────────────────────────────────────┤
+│ 📦 Runtime                             │
+│ Node                                   │
+├─────────────────────────────────────────┤
+│ 🔨 Build Command                       │
+│ npm install                            │
+├─────────────────────────────────────────┤
+│ ▶️ Start Command                       │
+│ node api-server.js                     │
+├─────────────────────────────────────────┤
+│ 💰 Instance Type                       │
+│ Free (Hobby)                           │
+└─────────────────────────────────────────┘
+```
+
+**الخطة المجانية (Hobby):**
+| الميزة | الحد |
+|--------|------|
+| RAM | 512 MB |
+| CPU | 0.1 vCPU |
+| ساعات شهرياً | 750 ساعة |
+| باندويث | 5 GB |
+| نوم | بعد 15 دقيقة |
+
+---
+
+### 🔐 الخطوة 3: متغيرات البيئة (إجباري)
+
+تحت `Environment Variables` أضف:
+
+```
+┌──────────────────────────────────────────────────┐
+│ KEY              │ VALUE                         │
+├──────────────────┼───────────────────────────────┤
+│ GITHUB_TOKEN     │ ghp_xxxxxxxxxxxxxxxxxxxx      │
+│ GITHUB_USERNAME  │ your-username                 │
+│ R2_PUBLIC_URL    │ https://pub-xxx.r2.dev        │
+│ API_KEY          │ my-secret-key (اختياري)       │
+└──────────────────────────────────────────────────┘
+```
+
+**وين تلقى هذه القيم؟**
+
+| القيمة | تلقاها من |
+|--------|-----------|
+| `GITHUB_TOKEN` | GitHub → Settings → Developer settings → Tokens |
+| `GITHUB_USERNAME` | اسم المستخدم حقك في GitHub |
+| `R2_PUBLIC_URL` | Cloudflare R2 → الدلو → Settings → Public URL |
+| `API_KEY` | أي كلمة سر تختارها (للحماية) |
+
+---
+
+### 🎬 الخطوة 4: إنشاء ونشر
+
+1. **اضغط:** `Create Web Service`
+2. **انتظر البناء (3-5 دقائق):**
+
+```
+⏳ Cloning repository...
+⏳ Installing dependencies (npm install)...
+⏳ Building...
+⏳ Deploying...
+✅ Your service is live!
+```
+
+3. **السجلات الناجحة راح تظهر:**
+
+```
+🚀 السيرفر شغال على المنفذ 3000
+👷 العمال: 6
+👤 المستخدم: your-username
+```
+
+4. **الرابط النهائي:**
+
+```
+🟢 https://ffmpeg-api.onrender.com
+```
+
+**هذا الرابط هو اللي تستخدمه في n8n!**
+
+---
+
+### ⏰ الخطوة 5: منع نوم السيرفر (ضروري)
+
+السيرفر على Render **ينام بعد 15 دقيقة بدون استخدام**. لمنع هذا:
+
+#### استخدم UptimeRobot (مجاني):
+
+1. **سجل في [UptimeRobot](https://uptimerobot.com)**
+2. **اضغط:** `+ Create New Monitor`
+3. **املأ البيانات:**
+
+```
+┌────────────────────────────────────────┐
+│ Monitor Type:    HTTP(s)               │
+│ Friendly Name:   FFmpeg API            │
+│ URL:             https://ffmpeg-api    │
+│                  .onrender.com/health  │
+│ Interval:        14 minutes            │
+│ Timeout:         30 seconds            │
+└────────────────────────────────────────┘
+```
+
+4. **اضغط:** `Create Monitor`
+5. **تأكد إنه يشتغل:** روح لـ `https://ffmpeg-api.onrender.com/health`
+
+**الرد الصحيح:**
+```json
+{
+  "ok": true,
+  "active_jobs": 0,
+  "total_jobs": 0
+}
+```
+
+✅ **الحين السيرفر صاحي 24/7!**
+
+---
+
+### 🧪 الخطوة 6: اختبار السيرفر
+
+#### اختبار الصحة:
+```bash
+curl https://ffmpeg-api.onrender.com/health
+```
+
+#### اختبار أمر FFmpeg:
+```bash
+curl -X POST https://ffmpeg-api.onrender.com/v1/run-ffmpeg-command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_files": {
+      "in_1": "https://storage.rendi.dev/sample/sample.avi"
+    },
+    "output_files": {
+      "out_1": "test-output.mp4"
+    },
+    "ffmpeg_command": "-i {{in_1}} -vf scale=320:240 {{out_1}} -y"
+  }'
+```
+
+**الرد المتوقع:**
+```json
+{
+  "command_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+#### فحص النتيجة:
+```bash
+curl https://ffmpeg-api.onrender.com/v1/commands/550e8400-e29b-41d4-a716-446655440000
+```
+
+**بعد دقيقة تقريباً:**
+```json
+{
+  "command_id": "550e8400-...",
+  "status": "SUCCESS",
+  "output_files": {
+    "out_1": {
+      "storage_url": "https://pub-xxx.r2.dev/test-output.mp4",
+      "url": "https://pub-xxx.r2.dev/test-output.mp4"
+    }
+  }
+}
+```
+
+---
+
+### 🔄 الخطوة 7: ربط n8n
+
+في n8n workflow حقك، غير **فقط** Base URL:
+
+```
+┌────────────────────────────────────────────┐
+│ ❌ القديم: https://api.rendi.dev           │
+│ ✅ الجديد: https://ffmpeg-api.onrender.com │
+└────────────────────────────────────────────┘
+```
+
+**كل شيء آخر يبقى كما هو:**
+- نفس الـ body
+- نفس الـ headers
+- نفس الـ endpoints
+- نفس الـ variables
+
+---
+
+### 📊 مراقبة السيرفر
+
+#### في Render Dashboard:
+```
+https://dashboard.render.com
+→ اختار ffmpeg-api
+→ تشوف: Logs, Metrics, Usage
+```
+
+#### مقاييس مهمة:
+| المقياس | الطبيعي | خطر |
+|---------|---------|-----|
+| **CPU** | 1-5% | > 80% |
+| **Memory** | 50-100 MB | > 400 MB |
+| **Requests** | 10-100/دقيقة | > 1000/دقيقة |
+| **Response Time** | 50-200ms | > 1000ms |
+
+---
+
+### 🔧 حل مشاكل Render الشائعة
+
+#### ❌ السيرفر ينام رغم UptimeRobot
+**الحل:**
+1. تأكد إن UptimeRobot يفحص `/health`
+2. اختار Interval = 14 minutes (مو 30)
+3. تأكد إن الرابط صحيح ويبدأ بـ `https://`
+
+#### ❌ Build فشل
+**الحل:**
+```bash
+# تأكد إن package.json موجود ويحتوي:
+{
+  "dependencies": {
+    "express": "^4.18.2",
+    "uuid": "^9.0.0"
+  }
+}
+```
+
+#### ❌ السيرفر يشتغل بس ما يستجيب
+**الحل:**
+1. روح لـ Render Dashboard → Logs
+2. تأكد من متغيرات البيئة موجودة
+3. تأكد إن `GITHUB_TOKEN` له صلاحيات `repo` و `workflow`
+
+#### ❌ خطأ: "Cannot find module"
+**الحل:**
+- تأكد إن `Build Command` هو: `npm install`
+- روح لـ Manual Deploy → Clear cache and redeploy
+
+---
+
+### 💡 نصائح لـ Render
+
+1. **لا تستخدم المتغيرات الحساسة في الكود** - استخدم Environment Variables
+2. **راقب السجلات أول أسبوع** - عشان تتأكد كل شيء تمام
+3. **استخدم UptimeRobot** - بدون منع النوم، السيرفر ياخذ 30-60 ثانية عشان يصحى
+4. **الخطة المجانية تكفي** - 750 ساعة = شهر كامل + 20 ساعة إضافية
+5. **الباندويث ما يخلص** - 5 GB = مليون طلب JSON
+
+---
+
+### 📈 ترقية الخطة (إذا احتجت)
+
+| الخطة | السعر | المميزات |
+|-------|-------|----------|
+| **Hobby** | $0 | 512 MB, 0.1 CPU, ينام |
+| **Starter** | $7/شهر | 1 GB, 0.5 CPU, بدون نوم |
+| **Pro** | $25/شهر | 2 GB, 1 CPU, تحليلات |
+
+**ما تحتاج ترقية! Hobby كافية تماماً**
+
+---
+
+### ✅ قائمة التحقق النهائية
+
+- [ ] ربطت GitHub مع Render
+- [ ] اخترت مستودع `ffmpeg-free-api`
+- [ ] حطيت Build: `npm install`
+- [ ] حطيت Start: `node api-server.js`
+- [ ] أضفت `GITHUB_TOKEN`
+- [ ] أضفت `GITHUB_USERNAME`
+- [ ] أضفت `R2_PUBLIC_URL`
+- [ ] شغلت UptimeRobot على `/health`
+- [ ] اختبرت `/health` ويطلع `ok: true`
+- [ ] جربت POST أمر FFmpeg
+- [ ] جربت GET النتيجة
+- [ ] غيرت الرابط في n8n
+
+**إذا كل المربعات ✅ - خلاص أنت جاهز! 🎉**
+#######################################################################################
+
 ## ❓ الأسئلة الشائعة
 
 ### س: هل هذا قانوني؟
