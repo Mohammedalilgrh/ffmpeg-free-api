@@ -113,8 +113,10 @@ async function triggerWorkflow(repo, inputs) {
     });
 
     if (response.status !== 204) {
-        throw new Error(`خطأ GitHub API: ${response.status}`);
-    }
+    const errorText = await response.text();
+    console.error('GitHub API error details:', errorText);
+    throw new Error('GitHub API error: ' + response.status + ' - ' + errorText.substring(0, 200));
+}
 
     // انتظار إنشاء run
     await new Promise(resolve => setTimeout(resolve, 4000));
