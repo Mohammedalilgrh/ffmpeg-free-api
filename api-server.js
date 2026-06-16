@@ -339,19 +339,39 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
 
         // فشل
         if (runData.conclusion !== 'success') {
-            jobs.set(command_id, { ...job, status: 'FAILED' });
-            saveJobs();
-            
-            return res.json({
-                command_id,
-                status: 'FAILED',
-                command_type: job.command_type || 'FFMPEG_COMMAND',
-                error_status: 'PROCESSING_ERROR',
-                error_message: 'فشل تنفيذ أمر FFmpeg',
-                original_request: job.original_request,
-                metadata: job.metadata
-            });
+    jobs.set(command_id, { ...job, status: 'FAILED' });
+    saveJobs();
+    
+    // Get real error from GitHub Actions logs
+    let errorMessage = 'FFmpeg command failed';
+    try {
+        const logs = await getWorkflowLogs(job.repo, job.run_id);
+        const logLines = logs.split('\n');
+        const errorLines = logLines.filter(line => 
+            line.includes('Error:') || 
+            line.includes('SyntaxError:') ||
+            line.includes('Cannot') ||
+            line.includes('failed') ||
+            line.includes('Illegal option') ||
+            line.includes('❌')
+        );
+        if (errorLines.length > 0) {
+            errorMessage = errorLines.slice(-5).join(' | ').substring(0, 500);
         }
+    } catch (e) {
+        errorMessage = 'Failed: ' + runData.conclusion;
+    }
+    
+    return res.json({
+        command_id: command_id,
+        status: 'FAILED',
+        command_type: job.command_type || 'FFMPEG_COMMAND',
+        error_status: 'PROCESSING_ERROR',
+        error_message: errorMessage,
+        original_request: job.original_request,
+        metadata: job.metadata
+    });
+}
 
         // نجاح!
         let outputFiles = {};
