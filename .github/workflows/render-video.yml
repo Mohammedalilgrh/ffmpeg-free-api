@@ -1,0 +1,214 @@
+name: Render Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_command:
+        description: 'Full FFmpeg command with {{placeholders}}'
+        required: true
+        type: string
+      input_files_json:
+        description: 'Input files JSON string'
+        required: false
+        type: string
+        default: '{}'
+      output_files_json:
+        description: 'Output files JSON string'
+        required: true
+        type: string
+      max_command_run_seconds:
+        description: 'Max runtime in seconds'
+        required: false
+        type: string
+        default: '300'
+      vcpu_count:
+        description: 'vCPU count'
+        required: false
+        type: string
+        default: '8'
+      metadata_json:
+        description: 'Metadata JSON'
+        required: false
+        type: string
+        default: '{}'
+      command_id:
+        description: 'Command ID for tracking'
+        required: true
+        type: string
+      input_compressed_folder:
+        description: 'Compressed folder URL (optional)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: تثبيت FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg curl unzip
+
+      - name: تثبيت Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: تثبيت المكتبات
+        run: |
+          npm init -y
+          npm install @aws-sdk/client-s3
+
+      - name: معالجة الفيديو
+        env:
+          FFMPEG_COMMAND: ${{ github.event.inputs.ffmpeg_command }}
+          INPUT_FILES_JSON: ${{ github.event.inputs.input_files_json }}
+          OUTPUT_FILES_JSON: ${{ github.event.inputs.output_files_json }}
+          MAX_RUN_SECONDS: ${{ github.event.inputs.max_command_run_seconds }}
+          VCPU_COUNT: ${{ github.event.inputs.vcpu_count }}
+          METADATA_JSON: ${{ github.event.inputs.metadata_json }}
+          COMMAND_ID: ${{ github.event.inputs.command_id }}
+          INPUT_COMPRESSED_FOLDER: ${{ github.event.inputs.input_compressed_folder }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          cat > render.js << 'RENDEREOF'
+          import { execSync } from 'child_process';
+          import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+          import fs from 'fs';
+          import path from 'path';
+          import { fileURLToPath } from 'url';
+          
+          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          
+          async function render() {
+            const env = process.env;
+            const tempDir = path.join(__dirname, 'temp');
+            fs.mkdirSync(tempDir, { recursive: true });
+          
+            try {
+              const inputFiles = JSON.parse(env.INPUT_FILES_JSON || '{}');
+              const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
+              let ffmpegCommand = env.FFMPEG_COMMAND;
+              
+              console.log('📥 المدخلات:', JSON.stringify(inputFiles));
+              console.log('📤 المخرجات:', JSON.stringify(outputFiles));
+              console.log('🎬 الأمر:', ffmpegCommand);
+          
+              // تحميل الملفات
+              const downloadedFiles = {};
+              for (const [key, url] of Object.entries(inputFiles)) {
+                if (url && url.startsWith('http')) {
+                  console.log(`⬇️ تحميل ${key}: ${url}`);
+                  const ext = path.extname(new URL(url).pathname) || '.mp4';
+                  const localPath = path.join(tempDir, `${key}${ext}`);
+                  
+                  for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                      execSync(`curl -L --retry 3 --retry-delay 5 --max-time 120 -o "${localPath}" "${url}"`, {
+                        stdio: 'inherit',
+                        timeout: 180000
+                      });
+                      downloadedFiles[key] = localPath;
+                      console.log(`✅ تم تحميل ${key}`);
+                      break;
+                    } catch (err) {
+                      if (attempt === 3) throw err;
+                      console.log(`⚠️ محاولة ${attempt} فشلت، إعادة...`);
+                      await new Promise(r => setTimeout(r, 2000));
+                    }
+                  }
+                }
+              }
+          
+              // معالجة المجلد المضغوط
+              if (env.INPUT_COMPRESSED_FOLDER) {
+                console.log('📦 تحميل المجلد المضغوط...');
+                const zipPath = path.join(tempDir, 'input.zip');
+                execSync(`curl -L -o "${zipPath}" "${env.INPUT_COMPRESSED_FOLDER}"`, { stdio: 'inherit' });
+                execSync(`unzip -o "${zipPath}" -d ${tempDir}/input_folder`, { stdio: 'inherit' });
+                downloadedFiles['input_folder'] = path.join(tempDir, 'input_folder');
+              }
+          
+              // استبدال المتغيرات
+              for (const [key, localPath] of Object.entries(downloadedFiles)) {
+                ffmpegCommand = ffmpegCommand.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), localPath);
+              }
+          
+              const outputPaths = {};
+              for (const [key, filename] of Object.entries(outputFiles)) {
+                const outputPath = path.join(tempDir, filename);
+                outputPaths[key] = outputPath;
+                ffmpegCommand = ffmpegCommand.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), outputPath);
+              }
+          
+              console.log('🎥 تشغيل:', ffmpegCommand);
+              const startTime = Date.now();
+              
+              execSync(ffmpegCommand, {
+                stdio: 'inherit',
+                timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000
+              });
+              
+              console.log(`✅ اكتمل في ${((Date.now() - startTime) / 1000).toFixed(2)} ثانية`);
+          
+              // رفع الملفات لـ R2
+              const s3Client = new S3Client({
+                region: 'auto',
+                endpoint: env.R2_ENDPOINT,
+                credentials: {
+                  accessKeyId: env.R2_ACCESS_KEY,
+                  secretAccessKey: env.R2_SECRET_KEY
+                },
+                forcePathStyle: true
+              });
+          
+              for (const [key, outputPath] of Object.entries(outputPaths)) {
+                if (!fs.existsSync(outputPath)) {
+                  console.error(`❌ الملف غير موجود: ${outputPath}`);
+                  continue;
+                }
+          
+                const filename = path.basename(outputPath);
+                const fileSize = fs.statSync(outputPath).size;
+                console.log(`📤 رفع ${filename} (${(fileSize / 1024 / 1024).toFixed(2)} MB)...`);
+                
+                await s3Client.send(new PutObjectCommand({
+                  Bucket: env.R2_BUCKET,
+                  Key: filename,
+                  Body: fs.readFileSync(outputPath),
+                  ContentType: 'video/mp4'
+                }));
+                
+                const publicUrl = `${env.R2_PUBLIC_URL.replace(/\/$/, '')}/${filename}`;
+                console.log(`VIDEO_URL_RESULT_${key}=${publicUrl}`);
+                console.log(`✅ ${key}: ${publicUrl}`);
+              }
+              
+              console.log(`COMMAND_ID=${env.COMMAND_ID}`);
+            } catch (error) {
+              console.error('❌ فشل:', error);
+              process.exit(1);
+            } finally {
+              if (fs.existsSync(tempDir)) {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+                console.log('🧹 تنظيف الملفات المؤقتة');
+              }
+            }
+          }
+          
+          render().catch(e => {
+            console.error('❌ خطأ فادح:', e);
+            process.exit(1);
+          });
+          RENDEREOF
+          
+          node render.js
