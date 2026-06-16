@@ -100,17 +100,7 @@ function validateKeys(input_files, output_files) {
 
 // تشغيل workflow في GitHub Actions
 async function triggerWorkflow(repo, inputs) {
-    // First get the workflow ID
-    const listUrl = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows`;
-    const listRes = await fetch(listUrl, {
-        headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' }
-    });
-    const listData = await listRes.json();
-    const workflowId = listData.workflows?.[0]?.id;
-    
-    if (!workflowId) throw new Error('No workflow found in ' + repo);
-    
-    const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/${workflowId}/dispatches`;
+    const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/render-video.yml/dispatches`;
     
     const response = await fetch(url, {
         method: 'POST',
@@ -123,14 +113,19 @@ async function triggerWorkflow(repo, inputs) {
     });
 
     if (response.status !== 204) {
-        const errorText = await response.text();
-        throw new Error('GitHub API error: ' + response.status + ' - ' + errorText.substring(0, 200));
-    }
+    const errorText = await response.text();
+    console.error('GitHub API error details:', errorText);
+    throw new Error('GitHub API error: ' + response.status + ' - ' + errorText.substring(0, 200));
+}
 
+    // انتظار إنشاء run
     await new Promise(resolve => setTimeout(resolve, 4000));
 
+    // جلب run ID
     const runsUrl = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/runs?per_page=1`;
-    const runsRes = await fetch(runsUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}` } });
+    const runsRes = await fetch(runsUrl, {
+        headers: { 'Authorization': `token ${GITHUB_TOKEN}` }
+    });
     const runsData = await runsRes.json();
     
     return runsData.workflow_runs?.[0]?.id || null;
