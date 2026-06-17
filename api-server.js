@@ -227,16 +227,15 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
         const repo = getNextRepo();
         
         // تحضير مدخلات workflow
-        const workflowInputs = {
-            ffmpeg_command,
-            input_files_json: JSON.stringify(input_files || {}),
-            output_files_json: JSON.stringify(output_files),
-            max_command_run_seconds: max_command_run_seconds.toString(),
-            vcpu_count: vcpu_count.toString(),
-            metadata_json: JSON.stringify(metadata || {}),
-            command_id: commandId,
-            input_compressed_folder: input_compressed_folder || ''
-        };
+       // بعد - صح
+const workflowInputs = {
+    ffmpeg_command,
+    input_files_json: JSON.stringify(input_files || {}),
+    output_files_json: JSON.stringify(output_files),
+    max_command_run_seconds: max_command_run_seconds.toString(),
+    command_id: commandId,
+    input_compressed_folder: input_compressed_folder || ''
+};
 
         // تشغيل workflow
         const runId = await triggerWorkflow(repo, workflowInputs);
