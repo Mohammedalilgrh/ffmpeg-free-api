@@ -1,214 +1,198 @@
-name: Render Video
+name: ⚡ Render Video (Instant)
 
 on:
   workflow_dispatch:
     inputs:
-      ffmpeg_command:
-        description: 'Full FFmpeg command with {{placeholders}}'
+      engine:
         required: true
-        type: string
-      input_files_json:
-        description: 'Input files JSON string'
-        required: false
-        type: string
-        default: '{}'
-      output_files_json:
-        description: 'Output files JSON string'
-        required: true
-        type: string
-      max_command_run_seconds:
-        description: 'Max runtime in seconds'
-        required: false
-        type: string
-        default: '300'
-      vcpu_count:
-        description: 'vCPU count'
-        required: false
-        type: string
-        default: '8'
-      metadata_json:
-        description: 'Metadata JSON'
-        required: false
-        type: string
-        default: '{}'
-      command_id:
-        description: 'Command ID for tracking'
-        required: true
-        type: string
-      input_compressed_folder:
-        description: 'Compressed folder URL (optional)'
-        required: false
-        type: string
-        default: ''
+        type: choice
+        default: 'auto'
+        options: ['auto', 'ffmpeg', 'remotion']
+        description: 'Render engine'
+      
+      ffmpeg_command: {required: false, type: string, default: ''}
+      input_files_json: {required: false, type: string, default: '{}'}
+      output_files_json: {required: true, type: string}
+      max_command_run_seconds: {required: false, type: string, default: '300'}
+      input_compressed_folder: {required: false, type: string, default: ''}
+      
+      remotion_props_json: {required: false, type: string, default: '{}'}
+      remotion_component_code: {required: false, type: string, default: ''}
+      remotion_component_url: {required: false, type: string, default: ''}
+      
+      duration: {required: false, type: string, default: '3'}
+      fps: {required: false, type: string, default: '24'}
+      width: {required: false, type: string, default: '1280'}
+      height: {required: false, type: string, default: '720'}
+      
+      vcpu_count: {required: false, type: string, default: '8'}
+      metadata_json: {required: false, type: string, default: '{}'}
+      command_id: {required: true, type: string}
 
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 2
+    
+    container:
+      image: mohammedalilgrh/video-engine:v1
+      options: --user root
     
     steps:
-      - uses: actions/checkout@v3
-
-      - name: تثبيت FFmpeg
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip
-
-      - name: تثبيت Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-
-      - name: تثبيت المكتبات
-        run: |
-          npm init -y
-          npm install @aws-sdk/client-s3
-
-      - name: معالجة الفيديو
+      - name: 🎬 Render
         env:
+          ENGINE: ${{ github.event.inputs.engine }}
           FFMPEG_COMMAND: ${{ github.event.inputs.ffmpeg_command }}
           INPUT_FILES_JSON: ${{ github.event.inputs.input_files_json }}
           OUTPUT_FILES_JSON: ${{ github.event.inputs.output_files_json }}
           MAX_RUN_SECONDS: ${{ github.event.inputs.max_command_run_seconds }}
-          VCPU_COUNT: ${{ github.event.inputs.vcpu_count }}
-          METADATA_JSON: ${{ github.event.inputs.metadata_json }}
-          COMMAND_ID: ${{ github.event.inputs.command_id }}
           INPUT_COMPRESSED_FOLDER: ${{ github.event.inputs.input_compressed_folder }}
+          REMOTION_PROPS: ${{ github.event.inputs.remotion_props_json }}
+          REMOTION_CODE: ${{ github.event.inputs.remotion_component_code }}
+          REMOTION_URL: ${{ github.event.inputs.remotion_component_url }}
+          DURATION: ${{ github.event.inputs.duration }}
+          FPS: ${{ github.event.inputs.fps }}
+          WIDTH: ${{ github.event.inputs.width }}
+          HEIGHT: ${{ github.event.inputs.height }}
+          COMMAND_ID: ${{ github.event.inputs.command_id }}
           R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
           R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
-          cat > render.js << 'RENDEREOF'
+          cat > render.mjs << 'RENDEREOF'
           import { execSync } from 'child_process';
-          import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
           import fs from 'fs';
           import path from 'path';
-          import { fileURLToPath } from 'url';
           
-          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          const env = process.env;
+          const start = Date.now();
           
-          async function render() {
-            const env = process.env;
-            const tempDir = path.join(__dirname, 'temp');
+          let engine = env.ENGINE;
+          if (engine === 'auto') {
+            engine = (env.REMOTION_URL || env.REMOTION_CODE) ? 'remotion' : 'ffmpeg';
+          }
+          console.log(`⚡ Engine: ${engine}`);
+          
+          if (engine === 'ffmpeg') {
+            const tempDir = '/tmp/render_' + Date.now();
             fs.mkdirSync(tempDir, { recursive: true });
-          
+            
             try {
               const inputFiles = JSON.parse(env.INPUT_FILES_JSON || '{}');
               const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
-              let ffmpegCommand = env.FFMPEG_COMMAND;
+              let cmd = env.FFMPEG_COMMAND;
+              const downloaded = {};
               
-              console.log('📥 المدخلات:', JSON.stringify(inputFiles));
-              console.log('📤 المخرجات:', JSON.stringify(outputFiles));
-              console.log('🎬 الأمر:', ffmpegCommand);
-          
-              // تحميل الملفات
-              const downloadedFiles = {};
-              for (const [key, url] of Object.entries(inputFiles)) {
+              for (const [k, url] of Object.entries(inputFiles)) {
                 if (url && url.startsWith('http')) {
-                  console.log(`⬇️ تحميل ${key}: ${url}`);
                   const ext = path.extname(new URL(url).pathname) || '.mp4';
-                  const localPath = path.join(tempDir, `${key}${ext}`);
-                  
-                  for (let attempt = 1; attempt <= 3; attempt++) {
+                  const lp = path.join(tempDir, k + ext);
+                  for (let a = 1; a <= 2; a++) {
                     try {
-                      execSync(`curl -L --retry 3 --retry-delay 5 --max-time 120 -o "${localPath}" "${url}"`, {
-                        stdio: 'inherit',
-                        timeout: 180000
-                      });
-                      downloadedFiles[key] = localPath;
-                      console.log(`✅ تم تحميل ${key}`);
+                      execSync(`curl -L --retry 2 --max-time 60 -o "${lp}" "${url}"`, { stdio: 'inherit', timeout: 90000 });
+                      downloaded[k] = lp;
                       break;
-                    } catch (err) {
-                      if (attempt === 3) throw err;
-                      console.log(`⚠️ محاولة ${attempt} فشلت، إعادة...`);
-                      await new Promise(r => setTimeout(r, 2000));
+                    } catch {
+                      if (a === 2) throw new Error('Download failed');
                     }
                   }
                 }
               }
-          
-              // معالجة المجلد المضغوط
+              
               if (env.INPUT_COMPRESSED_FOLDER) {
-                console.log('📦 تحميل المجلد المضغوط...');
-                const zipPath = path.join(tempDir, 'input.zip');
-                execSync(`curl -L -o "${zipPath}" "${env.INPUT_COMPRESSED_FOLDER}"`, { stdio: 'inherit' });
-                execSync(`unzip -o "${zipPath}" -d ${tempDir}/input_folder`, { stdio: 'inherit' });
-                downloadedFiles['input_folder'] = path.join(tempDir, 'input_folder');
+                const zp = path.join(tempDir, 'input.zip');
+                execSync(`curl -L --max-time 60 -o "${zp}" "${env.INPUT_COMPRESSED_FOLDER}"`, { stdio: 'inherit' });
+                execSync(`unzip -o "${zp}" -d ${tempDir}/input_folder`, { stdio: 'inherit' });
+                downloaded['input_folder'] = path.join(tempDir, 'input_folder');
               }
-          
-              // استبدال المتغيرات
-              for (const [key, localPath] of Object.entries(downloadedFiles)) {
-                ffmpegCommand = ffmpegCommand.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), localPath);
-              }
-          
-              const outputPaths = {};
-              for (const [key, filename] of Object.entries(outputFiles)) {
-                const outputPath = path.join(tempDir, filename);
-                outputPaths[key] = outputPath;
-                ffmpegCommand = ffmpegCommand.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), outputPath);
-              }
-          
-              console.log('🎥 تشغيل:', ffmpegCommand);
-              const startTime = Date.now();
               
-              execSync(ffmpegCommand, {
-                stdio: 'inherit',
-                timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000
-              });
+              for (const [k, lp] of Object.entries(downloaded)) {
+                cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), lp);
+              }
               
-              console.log(`✅ اكتمل في ${((Date.now() - startTime) / 1000).toFixed(2)} ثانية`);
-          
-              // رفع الملفات لـ R2
-              const s3Client = new S3Client({
-                region: 'auto',
-                endpoint: env.R2_ENDPOINT,
-                credentials: {
-                  accessKeyId: env.R2_ACCESS_KEY,
-                  secretAccessKey: env.R2_SECRET_KEY
-                },
-                forcePathStyle: true
-              });
-          
-              for (const [key, outputPath] of Object.entries(outputPaths)) {
-                if (!fs.existsSync(outputPath)) {
-                  console.error(`❌ الملف غير موجود: ${outputPath}`);
-                  continue;
-                }
-          
-                const filename = path.basename(outputPath);
-                const fileSize = fs.statSync(outputPath).size;
-                console.log(`📤 رفع ${filename} (${(fileSize / 1024 / 1024).toFixed(2)} MB)...`);
+              const outputs = {};
+              for (const [k, fn] of Object.entries(outputFiles)) {
+                const op = path.join(tempDir, fn);
+                outputs[k] = op;
+                cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), op);
+              }
+              
+              console.log('🎥 Running FFmpeg...');
+              execSync(cmd, { stdio: 'inherit', timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000 });
+              
+              for (const [k, op] of Object.entries(outputs)) {
+                if (!fs.existsSync(op)) continue;
+                const fn = path.basename(op);
+                const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
                 
-                await s3Client.send(new PutObjectCommand({
-                  Bucket: env.R2_BUCKET,
-                  Key: filename,
-                  Body: fs.readFileSync(outputPath),
-                  ContentType: 'video/mp4'
-                }));
-                
-                const publicUrl = `${env.R2_PUBLIC_URL.replace(/\/$/, '')}/${filename}`;
-                console.log(`VIDEO_URL_RESULT_${key}=${publicUrl}`);
-                console.log(`✅ ${key}: ${publicUrl}`);
+                execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${op}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, { stdio: 'inherit', timeout: 30000 });
+                console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
-              
-              console.log(`COMMAND_ID=${env.COMMAND_ID}`);
-            } catch (error) {
-              console.error('❌ فشل:', error);
+            } catch (e) {
+              console.error('❌', e.message);
               process.exit(1);
             } finally {
-              if (fs.existsSync(tempDir)) {
-                fs.rmSync(tempDir, { recursive: true, force: true });
-                console.log('🧹 تنظيف الملفات المؤقتة');
+              if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+          }
+          
+          if (engine === 'remotion') {
+            const duration = parseInt(env.DURATION || '3') * parseInt(env.FPS || '24');
+            const props = env.REMOTION_PROPS || '{}';
+            
+            const defaultComponent = `import React from 'react';
+          import {AbsoluteFill, useCurrentFrame, spring, interpolate} from 'remotion';
+          export const Component = (props) => {
+            const frame = useCurrentFrame();
+            const f = {fps: ${env.FPS || 24}};
+            const {title = 'مرحباً', subtitle = '', bg = '#0a192f', accent = '#64ffda'} = props;
+            const s = spring({frame, fps: f.fps, config: {damping: 20}});
+            const o = interpolate(frame, [0, 10], [0, 1], {extrapolateRight: 'clamp'});
+            const p = frame / ${duration};
+            return (
+              <AbsoluteFill style={{background: bg, fontFamily: 'Arial', alignItems: 'center', justifyContent: 'center'}}>
+                <div style={{position: 'absolute', inset: 0, background: \`radial-gradient(circle at \${50+Math.sin(frame*0.02)*30}% \${50+Math.cos(frame*0.02)*30}%, \${accent}22, transparent 70%)\`}} />
+                <div style={{transform: \`scale(\${s})\`, opacity: o, textAlign: 'center', zIndex: 1}}>
+                  <h1 style={{fontSize: 80, color: accent, margin: 0, textShadow: \`0 0 30px \${accent}44\`}}>{title}</h1>
+                  {subtitle && <p style={{fontSize: 32, color: '#ccd6f6', marginTop: 20}}>{subtitle}</p>}
+                </div>
+                <div style={{position: 'absolute', bottom: 40, left: '10%', right: '10%', height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2}}>
+                  <div style={{height: '100%', width: \`\${p*100}%\`, background: accent, borderRadius: 2, boxShadow: \`0 0 10px \${accent}\`}} />
+                </div>
+              </AbsoluteFill>
+            );
+          };`;
+            
+            const componentCode = env.REMOTION_CODE || defaultComponent;
+            
+            fs.mkdirSync('src', {recursive: true});
+            if (env.REMOTION_URL) {
+              execSync(`curl -L --max-time 10 "${env.REMOTION_URL}" -o src/Component.tsx`, {stdio: 'inherit'});
+            } else {
+              fs.writeFileSync('src/Component.tsx', componentCode);
+            }
+            
+            fs.writeFileSync('src/index.ts', `import {registerRoot} from 'remotion';import {RemotionRoot} from './Root';registerRoot(RemotionRoot);`);
+            fs.writeFileSync('src/Root.tsx', `import {Composition} from 'remotion';import {Component} from './Component';export const RemotionRoot = () => {const p=JSON.parse('${props.replace(/'/g,"\\'")}');return <Composition id="V" component={Component} durationInFrames={${duration}} fps={${env.FPS||24}} width={${env.WIDTH||1280}} height={${env.HEIGHT||720}} defaultProps={p} />;};`);
+            
+            const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
+            for (const [k, fn] of Object.entries(outputFiles)) {
+              console.log('🎬 Rendering...');
+              execSync(`npx remotion render V "${fn}" --props='${props}' --fps=${env.FPS||24} --codec=h264 --concurrency=4`, {stdio: 'inherit'});
+              
+              if (fs.existsSync(fn)) {
+                const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
+                execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${fn}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, {stdio: 'inherit', timeout: 30000});
+                console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
             }
           }
           
-          render().catch(e => {
-            console.error('❌ خطأ فادح:', e);
-            process.exit(1);
-          });
+          const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+          console.log(`✅ Done in ${elapsed}s`);
+          console.log(`COMMAND_ID=${env.COMMAND_ID}`);
           RENDEREOF
           
-          node render.js
+          node render.mjs
