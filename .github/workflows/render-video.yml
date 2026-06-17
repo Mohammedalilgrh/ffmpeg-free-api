@@ -73,7 +73,7 @@ jobs:
           if (engine === 'auto') {
             engine = (env.REMOTION_URL || env.REMOTION_CODE) ? 'remotion' : 'ffmpeg';
           }
-          console.log(`⚡ Engine: ${engine}`);
+          console.log(`Engine: ${engine}`);
           
           if (engine === 'ffmpeg') {
             const tempDir = '/tmp/render_' + Date.now();
@@ -119,7 +119,7 @@ jobs:
                 cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), op);
               }
               
-              console.log('🎥 Running FFmpeg...');
+              console.log('Running FFmpeg...');
               execSync(cmd, { stdio: 'inherit', timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000 });
               
               for (const [k, op] of Object.entries(outputs)) {
@@ -131,7 +131,7 @@ jobs:
                 console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
             } catch (e) {
-              console.error('❌', e.message);
+              console.error('Error:', e.message);
               process.exit(1);
             } finally {
               if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -147,7 +147,7 @@ jobs:
           export const Component = (props) => {
             const frame = useCurrentFrame();
             const f = {fps: ${env.FPS || 24}};
-            const {title = 'مرحباً', subtitle = '', bg = '#0a192f', accent = '#64ffda'} = props;
+            const {title = 'Hello', subtitle = '', bg = '#0a192f', accent = '#64ffda'} = props;
             const s = spring({frame, fps: f.fps, config: {damping: 20}});
             const o = interpolate(frame, [0, 10], [0, 1], {extrapolateRight: 'clamp'});
             const p = frame / ${duration};
@@ -179,7 +179,7 @@ jobs:
             
             const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
             for (const [k, fn] of Object.entries(outputFiles)) {
-              console.log('🎬 Rendering...');
+              console.log('Rendering...');
               execSync(`npx remotion render V "${fn}" --props='${props}' --fps=${env.FPS||24} --codec=h264 --concurrency=4`, {stdio: 'inherit'});
               
               if (fs.existsSync(fn)) {
@@ -191,7 +191,7 @@ jobs:
           }
           
           const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-          console.log(`✅ Done in ${elapsed}s`);
+          console.log(`Done in ${elapsed}s`);
           console.log(`COMMAND_ID=${env.COMMAND_ID}`);
           RENDEREOF
           
