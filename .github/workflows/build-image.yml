@@ -21,4 +21,4 @@ jobs:
           context: .
           file: ./Dockerfile.engine
           push: true
-          tags: mohammedalilgrh/video-engine:v1
+          tags: mohammedaligrh/video-engine:v1
