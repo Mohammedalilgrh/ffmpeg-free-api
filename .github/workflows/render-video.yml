@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 2
     
     container:
-      image: mohammedalilgrh/video-engine:v1
+      image: mohammedaligrh/video-engine:v1
       options: --user root
     
     steps:
