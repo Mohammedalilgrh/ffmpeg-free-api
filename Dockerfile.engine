@@ -1,0 +1,21 @@
+FROM node:20-bookworm
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    wget gnupg ca-certificates \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libgbm1 libasound2 \
+    libxcomposite1 libxdamage1 libxrandr2 \
+    libpango-1.0-0 libcairo2 \
+    ffmpeg python3-pip curl unzip && \
+    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    pip3 install awscli --quiet && \
+    npm install -g @remotion/cli @remotion/renderer react react-dom && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV CHROME_PATH=/usr/bin/google-chrome-stable
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+WORKDIR /workspace
