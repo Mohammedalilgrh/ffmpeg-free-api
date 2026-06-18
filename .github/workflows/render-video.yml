@@ -4,157 +4,171 @@ on:
   workflow_dispatch:
     inputs:
       engine:
-        required: true
-        type: choice
+        required: false
+        type: string
         default: 'auto'
-        options: ['auto', 'ffmpeg', 'remotion']
-        description: 'Render engine'
-      
-      ffmpeg_command: {required: false, type: string, default: ''}
-      input_files_json: {required: false, type: string, default: '{}'}
-      output_files_json: {required: true, type: string}
+        description: 'Render engine: auto, ffmpeg, or remotion'
+
+      ffmpeg_command:          {required: false, type: string, default: ''}
+      input_files_json:        {required: false, type: string, default: '{}'}
+      output_files_json:       {required: true,  type: string}
       max_command_run_seconds: {required: false, type: string, default: '300'}
       input_compressed_folder: {required: false, type: string, default: ''}
-      
-      remotion_props_json: {required: false, type: string, default: '{}'}
-      remotion_component_code: {required: false, type: string, default: ''}
-      remotion_component_url: {required: false, type: string, default: ''}
-      
-      duration: {required: false, type: string, default: '3'}
-      fps: {required: false, type: string, default: '24'}
-      width: {required: false, type: string, default: '1280'}
-      height: {required: false, type: string, default: '720'}
-      
-      vcpu_count: {required: false, type: string, default: '8'}
+
+      remotion_props_json:      {required: false, type: string, default: '{}'}
+      remotion_component_code:  {required: false, type: string, default: ''}
+      remotion_component_url:   {required: false, type: string, default: ''}
+
+      duration: {required: false, type: string, default: '5'}
+      fps:      {required: false, type: string, default: '30'}
+      width:    {required: false, type: string, default: '1080'}
+      height:   {required: false, type: string, default: '1920'}
+
+      vcpu_count:    {required: false, type: string, default: '8'}
       metadata_json: {required: false, type: string, default: '{}'}
-      command_id: {required: true, type: string}
+      command_id:    {required: true,  type: string}
 
 jobs:
   render:
     runs-on: ubuntu-latest
+    # 2 minutes is enough because the Docker image already has
+    # ffmpeg, remotion, chrome, awscli — no install time wasted
     timeout-minutes: 2
-    
+
     container:
       image: mohammedaligrh/video-engine:v1
       options: --user root
-    
+
     steps:
       - name: 🎬 Render
         env:
-          ENGINE: ${{ github.event.inputs.engine }}
-          FFMPEG_COMMAND: ${{ github.event.inputs.ffmpeg_command }}
-          INPUT_FILES_JSON: ${{ github.event.inputs.input_files_json }}
-          OUTPUT_FILES_JSON: ${{ github.event.inputs.output_files_json }}
-          MAX_RUN_SECONDS: ${{ github.event.inputs.max_command_run_seconds }}
-          INPUT_COMPRESSED_FOLDER: ${{ github.event.inputs.input_compressed_folder }}
-          REMOTION_PROPS: ${{ github.event.inputs.remotion_props_json }}
-          REMOTION_CODE: ${{ github.event.inputs.remotion_component_code }}
-          REMOTION_URL: ${{ github.event.inputs.remotion_component_url }}
-          DURATION: ${{ github.event.inputs.duration }}
-          FPS: ${{ github.event.inputs.fps }}
-          WIDTH: ${{ github.event.inputs.width }}
-          HEIGHT: ${{ github.event.inputs.height }}
-          COMMAND_ID: ${{ github.event.inputs.command_id }}
-          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
-          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          ENGINE:                   ${{ github.event.inputs.engine }}
+          FFMPEG_COMMAND:           ${{ github.event.inputs.ffmpeg_command }}
+          INPUT_FILES_JSON:         ${{ github.event.inputs.input_files_json }}
+          OUTPUT_FILES_JSON:        ${{ github.event.inputs.output_files_json }}
+          MAX_RUN_SECONDS:          ${{ github.event.inputs.max_command_run_seconds }}
+          INPUT_COMPRESSED_FOLDER:  ${{ github.event.inputs.input_compressed_folder }}
+          REMOTION_PROPS:           ${{ github.event.inputs.remotion_props_json }}
+          REMOTION_CODE:            ${{ github.event.inputs.remotion_component_code }}
+          REMOTION_URL:             ${{ github.event.inputs.remotion_component_url }}
+          DURATION:                 ${{ github.event.inputs.duration }}
+          FPS:                      ${{ github.event.inputs.fps }}
+          WIDTH:                    ${{ github.event.inputs.width }}
+          HEIGHT:                   ${{ github.event.inputs.height }}
+          COMMAND_ID:               ${{ github.event.inputs.command_id }}
+          R2_ACCESS_KEY:            ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY:            ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET:                ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT:              ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_URL:            ${{ secrets.R2_PUBLIC_URL }}
         run: |
           cat > render.mjs << 'RENDEREOF'
           import { execSync } from 'child_process';
           import fs from 'fs';
           import path from 'path';
-          
+
           const env = process.env;
           const start = Date.now();
-          
-          function logError(message, details = '') {
-            console.log(`❌ FFMPEG_ERROR: ${message}`);
-            if (details) console.log(`❌ FFMPEG_ERROR_DETAILS: ${details}`);
-          }
-          
-          function logSuccess(message) {
-            console.log(`✅ FFMPEG_SUCCESS: ${message}`);
-          }
-          
-          function logInfo(message) {
-            console.log(`📘 FFMPEG_INFO: ${message}`);
-          }
-          
-          let engine = env.ENGINE;
+
+          // ─── Logging helpers ───────────────────────────────────────
+          const logError   = (msg, detail = '') => { console.log(`❌ FFMPEG_ERROR: ${msg}`); if (detail) console.log(`❌ FFMPEG_ERROR_DETAILS: ${detail}`); };
+          const logSuccess = (msg)              =>   console.log(`✅ FFMPEG_SUCCESS: ${msg}`);
+          const logInfo    = (msg)              =>   console.log(`📘 FFMPEG_INFO: ${msg}`);
+
+          // ─── Engine selection ──────────────────────────────────────
+          let engine = (env.ENGINE || 'auto').trim();
           if (engine === 'auto') {
             engine = (env.REMOTION_URL || env.REMOTION_CODE) ? 'remotion' : 'ffmpeg';
           }
           logInfo(`Engine: ${engine}`);
-          
+
+          // ══════════════════════════════════════════════════════════
+          // FFMPEG ENGINE
+          // ══════════════════════════════════════════════════════════
           if (engine === 'ffmpeg') {
             const tempDir = '/tmp/render_' + Date.now();
             fs.mkdirSync(tempDir, { recursive: true });
-            
+
             try {
-              const inputFiles = JSON.parse(env.INPUT_FILES_JSON || '{}');
+              const inputFiles  = JSON.parse(env.INPUT_FILES_JSON  || '{}');
               const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
               let cmd = env.FFMPEG_COMMAND;
               const downloaded = {};
-              
+
+              // Download input files
               for (const [k, url] of Object.entries(inputFiles)) {
-                if (url && url.startsWith('http')) {
-                  const ext = path.extname(new URL(url).pathname) || '.mp4';
-                  const lp = path.join(tempDir, k + ext);
-                  for (let a = 1; a <= 2; a++) {
-                    try {
-                      execSync(`curl -L --retry 2 --max-time 60 -o "${lp}" "${url}"`, { stdio: 'inherit', timeout: 90000 });
-                      downloaded[k] = lp;
-                      break;
-                    } catch (err) {
-                      if (a === 2) {
-                        logError('DOWNLOAD_FAILED', `File: ${k}, URL: ${url}, Error: ${err.message}`);
-                        throw new Error('Download failed');
-                      }
+                if (!url || !url.startsWith('http')) continue;
+                const ext = path.extname(new URL(url).pathname) || '.mp4';
+                const lp  = path.join(tempDir, k + ext);
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                  try {
+                    execSync(
+                      `curl -L --retry 3 --max-time 90 -o "${lp}" "${url}"`,
+                      { stdio: 'inherit', timeout: 120000 }
+                    );
+                    downloaded[k] = lp;
+                    logInfo(`Downloaded ${k}`);
+                    break;
+                  } catch (err) {
+                    if (attempt === 3) {
+                      logError('DOWNLOAD_FAILED', `File: ${k}, URL: ${url}, Error: ${err.message}`);
+                      throw new Error('Download failed: ' + k);
                     }
+                    await new Promise(r => setTimeout(r, 2000));
                   }
                 }
               }
-              
+
+              // Download compressed input folder if provided
               if (env.INPUT_COMPRESSED_FOLDER) {
                 const zp = path.join(tempDir, 'input.zip');
-                execSync(`curl -L --max-time 60 -o "${zp}" "${env.INPUT_COMPRESSED_FOLDER}"`, { stdio: 'inherit' });
+                execSync(`curl -L --max-time 120 -o "${zp}" "${env.INPUT_COMPRESSED_FOLDER}"`, { stdio: 'inherit' });
                 execSync(`unzip -o "${zp}" -d ${tempDir}/input_folder`, { stdio: 'inherit' });
                 downloaded['input_folder'] = path.join(tempDir, 'input_folder');
+                logInfo('Extracted input_folder');
               }
-              
+
+              // Replace {{placeholders}} in the command
               for (const [k, lp] of Object.entries(downloaded)) {
                 cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), lp);
               }
-              
+
               const outputs = {};
               for (const [k, fn] of Object.entries(outputFiles)) {
                 const op = path.join(tempDir, fn);
                 outputs[k] = op;
                 cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), op);
               }
-              
-              logInfo('Running FFmpeg...');
+
+              logInfo('Running FFmpeg: ' + cmd.substring(0, 200));
               try {
-                execSync(cmd, { stdio: 'inherit', timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000 });
+                execSync(cmd, {
+                  stdio: 'inherit',
+                  timeout: (parseInt(env.MAX_RUN_SECONDS || '300') + 30) * 1000
+                });
               } catch (ffmpegError) {
                 logError('FFMPEG_EXECUTION_FAILED', ffmpegError.message.substring(0, 500));
                 throw ffmpegError;
               }
-              
+
+              // Upload outputs to R2
               for (const [k, op] of Object.entries(outputs)) {
                 if (!fs.existsSync(op)) {
-                  logError('OUTPUT_MISSING', `File: ${k}, Path: ${op}`);
+                  logError('OUTPUT_MISSING', `Key: ${k}, Path: ${op}`);
                   continue;
                 }
-                const fn = path.basename(op);
-                const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
-                
-                execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${op}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, { stdio: 'inherit', timeout: 30000 });
+                const fn  = path.basename(op);
+                const pu  = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
+                execSync(
+                  `AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} ` +
+                  `aws s3 cp "${op}" "s3://${env.R2_BUCKET}/${fn}" ` +
+                  `--endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`,
+                  { stdio: 'inherit', timeout: 60000 }
+                );
                 logSuccess(`VIDEO_URL_RESULT_${k}=${pu}`);
                 console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
+
             } catch (e) {
               logError('RENDER_FAILED', e.message.substring(0, 500));
               process.exit(1);
@@ -162,82 +176,147 @@ jobs:
               if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
             }
           }
-          
+
+          // ══════════════════════════════════════════════════════════
+          // REMOTION ENGINE
+          // ══════════════════════════════════════════════════════════
           if (engine === 'remotion') {
-            const duration = parseInt(env.DURATION || '3') * parseInt(env.FPS || '24');
+            const totalFrames = parseInt(env.DURATION || '5') * parseInt(env.FPS || '30');
             let props;
-            
+
             try {
               props = JSON.parse(env.REMOTION_PROPS || '{}');
             } catch (parseError) {
-              logError('REMOTION_PROPS_PARSE_ERROR', `Invalid JSON. Error: ${parseError.message}`);
+              logError('REMOTION_PROPS_PARSE_ERROR', `Invalid JSON: ${parseError.message}`);
               process.exit(1);
             }
-            
-            const defaultComponent = `import React from 'react';
-          import {AbsoluteFill, useCurrentFrame, spring, interpolate} from 'remotion';
+
+            // Default component — rich animated template
+            const defaultComponent = `
+          import React from 'react';
+          import { AbsoluteFill, useCurrentFrame, useVideoConfig, spring, interpolate } from 'remotion';
+
           export const Component = (props) => {
             const frame = useCurrentFrame();
-            const {fps} = {fps: ${env.FPS || 24}};
-            const {title = 'Hello', subtitle = '', bg = '#0a192f', accent = '#64ffda'} = props;
-            const s = spring({frame, fps, config: {damping: 20}});
-            const o = interpolate(frame, [0, 10], [0, 1], {extrapolateRight: 'clamp'});
-            const p = frame / ${duration};
+            const { fps, durationInFrames } = useVideoConfig();
+            const {
+              title    = 'Hello World',
+              subtitle = '',
+              text     = '',
+              bgColor  = '#0a192f',
+              accentColor = '#64ffda',
+              textColor   = '#ffffff',
+              template    = 'modern',
+            } = props;
+
+            const s = spring({ frame, fps, config: { damping: 15, stiffness: 100 } });
+            const o = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: 'clamp' });
+            const progress = frame / durationInFrames;
+
+            const bg = template === 'minimal'
+              ? '#ffffff'
+              : template === 'neon'
+                ? '#0a0a0a'
+                : bgColor;
+
             return (
-              <AbsoluteFill style={{background: bg, fontFamily: 'Arial', alignItems: 'center', justifyContent: 'center'}}>
-                <div style={{position: 'absolute', inset: 0, background: \`radial-gradient(circle at \${50+Math.sin(frame*0.02)*30}% \${50+Math.cos(frame*0.02)*30}%, \${accent}22, transparent 70%)\`}} />
-                <div style={{transform: \`scale(\${s})\`, opacity: o, textAlign: 'center', zIndex: 1}}>
-                  <h1 style={{fontSize: 80, color: accent, margin: 0, textShadow: \`0 0 30px \${accent}44\`}}>{title}</h1>
-                  {subtitle && <p style={{fontSize: 32, color: '#ccd6f6', marginTop: 20}}>{subtitle}</p>}
+              <AbsoluteFill style={{ background: bg, fontFamily: 'Arial', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                {/* Animated radial glow */}
+                <div style={{
+                  position: 'absolute', inset: 0,
+                  background: \`radial-gradient(circle at \${50 + Math.sin(frame * 0.02) * 30}% \${50 + Math.cos(frame * 0.02) * 30}%, \${accentColor}33, transparent 70%)\`
+                }} />
+
+                {/* Content */}
+                <div style={{ transform: \`scale(\${s}) translateY(\${(1 - s) * 40}px)\`, opacity: o, textAlign: 'center', zIndex: 1, padding: '0 60px' }}>
+                  {title && (
+                    <h1 style={{ fontSize: 80, color: accentColor, margin: 0, lineHeight: 1.2, textShadow: \`0 0 30px \${accentColor}55\` }}>
+                      {title}
+                    </h1>
+                  )}
+                  {subtitle && (
+                    <p style={{ fontSize: 40, color: textColor, margin: '20px 0 0', opacity: 0.9 }}>
+                      {subtitle}
+                    </p>
+                  )}
+                  {text && (
+                    <p style={{ fontSize: 28, color: '#8892b0', margin: '20px 0 0', lineHeight: 1.6 }}>
+                      {text}
+                    </p>
+                  )}
                 </div>
-                <div style={{position: 'absolute', bottom: 40, left: '10%', right: '10%', height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2}}>
-                  <div style={{height: '100%', width: \`\${p*100}%\`, background: accent, borderRadius: 2, boxShadow: \`0 0 10px \${accent}\`}} />
+
+                {/* Progress bar */}
+                <div style={{ position: 'absolute', bottom: 40, left: '10%', right: '10%', height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2 }}>
+                  <div style={{ height: '100%', width: \`\${progress * 100}%\`, background: accentColor, borderRadius: 2, boxShadow: \`0 0 10px \${accentColor}\` }} />
                 </div>
               </AbsoluteFill>
             );
           };`;
-            
+
             const componentCode = env.REMOTION_CODE || defaultComponent;
-            
-            fs.mkdirSync('src', {recursive: true});
+
+            fs.mkdirSync('src', { recursive: true });
+
+            // Load component from URL or use inline code
             if (env.REMOTION_URL) {
               try {
-                execSync(`curl -L --max-time 10 "${env.REMOTION_URL}" -o src/Component.tsx`, {stdio: 'inherit'});
+                execSync(`curl -L --max-time 30 "${env.REMOTION_URL}" -o src/Component.tsx`, { stdio: 'inherit' });
+                logInfo('Loaded component from URL');
               } catch (urlError) {
                 logError('COMPONENT_URL_FAILED', urlError.message);
                 process.exit(1);
               }
             } else {
               fs.writeFileSync('src/Component.tsx', componentCode);
+              logInfo('Using inline component');
             }
-            
+
             const propsString = JSON.stringify(props);
-            
-            fs.writeFileSync('src/index.ts', `import {registerRoot} from 'remotion';import {RemotionRoot} from './Root';registerRoot(RemotionRoot);`);
-            fs.writeFileSync('src/Root.tsx', `import {Composition} from 'remotion';import {Component} from './Component';export const RemotionRoot = () => {const p=${propsString};return <Composition id="V" component={Component} durationInFrames={${duration}} fps={${env.FPS||24}} width={${env.WIDTH||1280}} height={${env.HEIGHT||720}} defaultProps={p} />;};`);
-            
+
+            fs.writeFileSync('src/index.ts',
+              `import {registerRoot} from 'remotion';import {RemotionRoot} from './Root';registerRoot(RemotionRoot);`
+            );
+            fs.writeFileSync('src/Root.tsx',
+              `import {Composition} from 'remotion';import {Component} from './Component';` +
+              `export const RemotionRoot = () => {` +
+              `const p=${propsString};` +
+              `return <Composition id="V" component={Component} durationInFrames={${totalFrames}} fps={${env.FPS || 30}} width={${env.WIDTH || 1080}} height={${env.HEIGHT || 1920}} defaultProps={p} />;};`
+            );
+
             const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
             for (const [k, fn] of Object.entries(outputFiles)) {
               logInfo('Rendering Remotion...');
               try {
-                execSync(`npx remotion render V "${fn}" --props='${propsString.replace(/'/g, "'\\''")}' --fps=${env.FPS||24} --codec=h264 --concurrency=4`, {stdio: 'inherit'});
+                execSync(
+                  `npx remotion render V "${fn}" --props='${propsString.replace(/'/g, "'\\''")}' --fps=${env.FPS || 30} --codec=h264 --concurrency=4`,
+                  { stdio: 'inherit' }
+                );
               } catch (renderError) {
                 logError('REMOTION_RENDER_FAILED', renderError.message.substring(0, 500));
                 process.exit(1);
               }
-              
+
               if (fs.existsSync(fn)) {
                 const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
-                execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${fn}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, {stdio: 'inherit', timeout: 30000});
+                execSync(
+                  `AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} ` +
+                  `aws s3 cp "${fn}" "s3://${env.R2_BUCKET}/${fn}" ` +
+                  `--endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`,
+                  { stdio: 'inherit', timeout: 60000 }
+                );
                 logSuccess(`VIDEO_URL_RESULT_${k}=${pu}`);
                 console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
+              } else {
+                logError('OUTPUT_MISSING', `Remotion did not produce: ${fn}`);
               }
             }
           }
-          
+
+          // ─── Done ─────────────────────────────────────────────────
           const elapsed = ((Date.now() - start) / 1000).toFixed(1);
           logSuccess(`Done in ${elapsed}s`);
           console.log(`COMMAND_ID=${env.COMMAND_ID}`);
           RENDEREOF
-          
+
           node render.mjs
