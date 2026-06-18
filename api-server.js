@@ -25,28 +25,12 @@ let jobs = new Map();
 // ========== LOGGING SYSTEM ==========
 function log(level, message, data = {}) {
     const timestamp = new Date().toISOString();
-    const logEntry = {
-        timestamp,
-        level,
-        message,
-        ...data
-    };
-    
     const emoji = {
-        INFO: '📘',
-        SUCCESS: '✅',
-        ERROR: '❌',
-        WARN: '⚠️',
-        WORKER: '👷',
-        VIDEO: '🎬',
-        REMOTION: '🎨',
-        FFMPEG: '🎥',
-        UPLOAD: '📤',
-        STATUS: '📊'
+        INFO: '📘', SUCCESS: '✅', ERROR: '❌', WARN: '⚠️',
+        WORKER: '👷', VIDEO: '🎬', REMOTION: '🎨', FFMPEG: '🎥',
+        UPLOAD: '📤', STATUS: '📊'
     };
-    
     console.log(`${emoji[level] || '📝'} [${timestamp}] ${message}`);
-    
     if (Object.keys(data).length > 0) {
         console.log(`   📋 Details:`, JSON.stringify(data, null, 2));
     }
@@ -58,10 +42,10 @@ function loadJobs() {
             const data = fs.readFileSync('jobs-backup.json', 'utf8');
             const parsed = JSON.parse(data);
             jobs = new Map(parsed);
-            log('INFO', `تم تحميل ${jobs.size} مهمة من النسخة الاحتياطية`);
+            log('INFO', `Loaded ${jobs.size} jobs from backup`);
         }
     } catch (e) {
-        log('INFO', 'بداية جديدة - لا توجد نسخة احتياطية');
+        log('INFO', 'Fresh start - no backup');
     }
 }
 
@@ -70,7 +54,7 @@ function saveJobs() {
         const data = JSON.stringify(Array.from(jobs.entries()));
         fs.writeFileSync('jobs-backup.json', data);
     } catch (e) {
-        log('ERROR', 'خطأ في حفظ المهام', { error: e.message });
+        log('ERROR', 'Save jobs failed', { error: e.message });
     }
 }
 
@@ -86,7 +70,7 @@ setInterval(() => {
             cleaned++;
         }
     }
-    if (cleaned > 0) log('INFO', `تنظيف ${cleaned} مهمة قديمة`);
+    if (cleaned > 0) log('INFO', `Cleaned ${cleaned} old jobs`);
     saveJobs();
 }, 3600000);
 
@@ -94,7 +78,6 @@ function authMiddleware(req, res, next) {
     if (API_KEY) {
         const apiKey = req.headers['x-api-key'];
         if (apiKey !== API_KEY) {
-            log('WARN', 'محاولة دخول غير مصرح', { ip: req.ip });
             return res.status(401).json({ detail: 'Invalid authorization key' });
         }
     }
@@ -104,7 +87,7 @@ function authMiddleware(req, res, next) {
 function getNextRepo() {
     const repo = WORKER_REPOS[currentRepoIndex % WORKER_REPOS.length];
     currentRepoIndex++;
-    log('WORKER', `تم اختيار العامل`, { worker: repo, index: currentRepoIndex });
+    log('WORKER', `Selected worker`, { worker: repo });
     return repo;
 }
 
@@ -112,14 +95,14 @@ function validateKeys(input_files, output_files) {
     if (input_files) {
         for (const key of Object.keys(input_files)) {
             if (!key.startsWith('in_')) {
-                throw new Error(`مفتاح الإدخال "${key}" يجب أن يبدأ بـ "in_"`);
+                throw new Error(`Input key "${key}" must start with "in_"`);
             }
         }
     }
     if (output_files && output_files !== 'OUTPUT_FOLDER') {
         for (const key of Object.keys(output_files)) {
             if (!key.startsWith('out_')) {
-                throw new Error(`مفتاح الإخراج "${key}" يجب أن يبدأ بـ "out_"`);
+                throw new Error(`Output key "${key}" must start with "out_"`);
             }
         }
     }
@@ -128,7 +111,11 @@ function validateKeys(input_files, output_files) {
 async function triggerWorkflow(repo, inputs) {
     const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/render-video.yml/dispatches`;
     
-    log('VIDEO', `🚀 تشغيل الفيديو على العامل`, { worker: repo, command_id: inputs.command_id, engine: inputs.engine || 'ffmpeg' });
+    log('VIDEO', `Triggering workflow on ${repo}`, { 
+        worker: repo, 
+        command_id: inputs.command_id, 
+        engine: inputs.engine || 'ffmpeg' 
+    });
     
     const response = await fetch(url, {
         method: 'POST',
@@ -142,15 +129,15 @@ async function triggerWorkflow(repo, inputs) {
 
     if (response.status !== 204) {
         const errorText = await response.text();
-        log('ERROR', `فشل تشغيل workflow على ${repo}`, { 
+        log('ERROR', `Workflow trigger failed on ${repo}`, { 
             status: response.status, 
             error: errorText.substring(0, 300),
             worker: repo 
         });
-        throw new Error(`GitHub API error on ${repo}: ${response.status} - ${errorText.substring(0, 200)}`);
+        throw new Error(`GitHub API error on ${repo}: ${response.status}`);
     }
 
-    log('SUCCESS', `✅ تم تشغيل workflow بنجاح على ${repo}`);
+    log('SUCCESS', `Workflow triggered on ${repo}`);
 
     await new Promise(resolve => setTimeout(resolve, 4000));
 
@@ -173,7 +160,7 @@ async function checkRunStatus(repo, runId) {
     });
     const data = await response.json();
     
-    log('STATUS', `حالة التشغيل`, { 
+    log('STATUS', `Run status`, { 
         worker: repo, 
         run_id: runId, 
         status: data.status, 
@@ -190,17 +177,16 @@ async function getWorkflowLogs(repo, runId) {
     });
     const logs = await response.text();
     
-    // استخراج الأخطاء من اللوقز
     const errorLines = logs.split('\n').filter(line => 
+        line.includes('FFMPEG_ERROR:') || 
         line.includes('Error:') || 
         line.includes('❌') ||
         line.includes('SyntaxError:') ||
-        line.includes('failed') ||
-        line.includes('Cannot')
+        line.includes('failed')
     );
     
     if (errorLines.length > 0) {
-        log('ERROR', `🚨 أخطاء في ${repo}`, { 
+        log('ERROR', `Errors in ${repo}`, { 
             worker: repo, 
             errors: errorLines.slice(-10).map(e => e.substring(0, 200))
         });
@@ -226,7 +212,7 @@ function extractOutputFiles(logs, outputFiles) {
                 file_type: 'video',
                 mime_type: 'video/mp4'
             };
-            log('UPLOAD', `📤 فيديو مرفوع`, { key, url });
+            log('UPLOAD', `Video uploaded`, { key, url });
         }
     }
     
@@ -252,7 +238,7 @@ function extractOutputFiles(logs, outputFiles) {
 app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
     try {
         const { 
-            ffmpeg_command,
+            ffmpeg_command = '',
             input_files = {},
             output_files = {},
             command_id = uuidv4(),
@@ -271,7 +257,7 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
 
         const repo = getNextRepo();
 
-        log('VIDEO', `🎬 طلب فيديو جديد`, { 
+        log('VIDEO', `New video request`, { 
             command_id, 
             engine, 
             worker: repo,
@@ -280,7 +266,7 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
 
         // ========== REMOTION ENGINE ==========
         if (engine === 'remotion') {
-            log('REMOTION', `🎨 معالجة بالـ Remotion`, { command_id, props_length: remotion_props_json.length });
+            log('REMOTION', `Processing with Remotion`, { command_id });
             
             const job = {
                 command_id,
@@ -308,26 +294,26 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
                 remotion_component_url: remotion_component_url
             });
 
-            log('SUCCESS', `✅ Remotion قيد التشغيل`, { command_id, worker: repo });
+            log('SUCCESS', `Remotion job started`, { command_id, worker: repo });
             return res.json({ command_id, status: 'PROCESSING', worker: repo });
         }
 
         // ========== FFMPEG ENGINE ==========
         if (!ffmpeg_command) {
-            log('ERROR', 'ffmpeg_command مفقود');
+            log('ERROR', 'ffmpeg_command missing');
             return res.status(422).json({ 
                 detail: [{ loc: ['body', 'ffmpeg_command'], msg: 'Field required', type: 'missing' }] 
             });
         }
 
         try { validateKeys(input_files, output_files); } catch (error) {
-            log('ERROR', 'مفاتيح غير صالحة', { error: error.message });
+            log('ERROR', 'Invalid keys', { error: error.message });
             return res.status(422).json({
                 detail: [{ loc: ['body', 'input_files'], msg: error.message, type: 'value_error' }]
             });
         }
 
-        log('FFMPEG', `🎥 معالجة بالـ FFmpeg`, { command: ffmpeg_command.substring(0, 100) + '...' });
+        log('FFMPEG', `Processing with FFmpeg`, { command: ffmpeg_command.substring(0, 100) });
 
         const workflowInputs = {
             ffmpeg_command,
@@ -340,7 +326,7 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
 
         const runId = await triggerWorkflow(repo, workflowInputs);
         
-        if (!runId) throw new Error('لم يتم العثور على run ID');
+        if (!runId) throw new Error('Run ID not found');
 
         const job = {
             command_id,
@@ -357,16 +343,15 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
         jobs.set(command_id, job);
         saveJobs();
 
-        log('SUCCESS', `✅ FFmpeg قيد التشغيل`, { command_id, worker: repo, run_id: runId });
+        log('SUCCESS', `FFmpeg job started`, { command_id, worker: repo, run_id: runId });
         res.json({ command_id, status: 'PROCESSING', worker: repo, run_id: runId });
 
     } catch (error) {
-        log('ERROR', 'فشل في معالجة الطلب', { error: error.message });
+        log('ERROR', 'Request failed', { error: error.message });
         res.status(500).json({ detail: error.message });
     }
 });
 
-// POST /v1/run-chained-ffmpeg-commands
 app.post('/v1/run-chained-ffmpeg-commands', authMiddleware, async (req, res) => {
     try {
         const {
@@ -380,13 +365,13 @@ app.post('/v1/run-chained-ffmpeg-commands', authMiddleware, async (req, res) => 
 
         if (!ffmpeg_commands || !Array.isArray(ffmpeg_commands) || ffmpeg_commands.length === 0) {
             return res.status(422).json({
-                detail: [{ loc: ['body', 'ffmpeg_commands'], msg: 'يجب أن تكون مصفوفة غير فارغة', type: 'type_error' }]
+                detail: [{ loc: ['body', 'ffmpeg_commands'], msg: 'Array required', type: 'type_error' }]
             });
         }
 
         if (ffmpeg_commands.length > 10) {
             return res.status(422).json({
-                detail: [{ loc: ['body', 'ffmpeg_commands'], msg: 'الحد الأقصى 10 أوامر', type: 'value_error' }]
+                detail: [{ loc: ['body', 'ffmpeg_commands'], msg: 'Max 10 commands', type: 'value_error' }]
             });
         }
 
@@ -394,7 +379,7 @@ app.post('/v1/run-chained-ffmpeg-commands', authMiddleware, async (req, res) => 
         const command_id = uuidv4();
         const repo = getNextRepo();
 
-        log('FFMPEG', `🔗 أوامر متسلسلة (${ffmpeg_commands.length})`, { command_id, worker: repo });
+        log('FFMPEG', `Chained commands (${ffmpeg_commands.length})`, { command_id, worker: repo });
 
         const workflowInputs = {
             ffmpeg_command: combinedCommand,
@@ -405,7 +390,7 @@ app.post('/v1/run-chained-ffmpeg-commands', authMiddleware, async (req, res) => 
         };
 
         const runId = await triggerWorkflow(repo, workflowInputs);
-        if (!runId) throw new Error('لم يتم العثور على run ID');
+        if (!runId) throw new Error('Run ID not found');
 
         const job = {
             command_id,
@@ -422,27 +407,26 @@ app.post('/v1/run-chained-ffmpeg-commands', authMiddleware, async (req, res) => 
         jobs.set(command_id, job);
         saveJobs();
 
-        log('SUCCESS', `✅ أوامر متسلسلة قيد التشغيل`, { command_id, worker: repo });
+        log('SUCCESS', `Chained job started`, { command_id, worker: repo });
         res.json({ command_id, status: 'PROCESSING', worker: repo });
 
     } catch (error) {
-        log('ERROR', 'فشل في الأوامر المتسلسلة', { error: error.message });
+        log('ERROR', 'Chained request failed', { error: error.message });
         res.status(500).json({ detail: error.message });
     }
 });
 
-// GET /v1/commands/:command_id
 app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
     try {
         const { command_id } = req.params;
         const job = jobs.get(command_id);
 
         if (!job) {
-            log('WARN', `أمر غير موجود: ${command_id}`);
-            return res.status(404).json({ detail: 'الأمر غير موجود' });
+            log('WARN', `Command not found: ${command_id}`);
+            return res.status(404).json({ detail: 'Command not found' });
         }
 
-        log('STATUS', `فحص حالة: ${command_id}`, { worker: job.repo, status: job.status });
+        log('STATUS', `Checking: ${command_id}`, { worker: job.repo, status: job.status });
 
         if (job.type === 'REMOTION' && !job.run_id) {
             return res.json({
@@ -479,11 +463,12 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
             jobs.set(command_id, { ...job, status: 'FAILED' });
             saveJobs();
             
-            let errorMessage = 'FFmpeg command failed';
+            let errorMessage = 'Command failed';
             try {
                 const logs = await getWorkflowLogs(job.repo, job.run_id);
                 const logLines = logs.split('\n');
                 const errorLines = logLines.filter(line => 
+                    line.includes('FFMPEG_ERROR:') ||
                     line.includes('Error:') || 
                     line.includes('SyntaxError:') ||
                     line.includes('Cannot') ||
@@ -498,7 +483,7 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
                 errorMessage = 'Failed: ' + runData.conclusion;
             }
             
-            log('ERROR', `❌ فشل في ${job.repo}`, { 
+            log('ERROR', `Job failed on ${job.repo}`, { 
                 command_id, 
                 worker: job.repo, 
                 error: errorMessage.substring(0, 200) 
@@ -521,7 +506,7 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
             const logs = await getWorkflowLogs(job.repo, job.run_id);
             outputFiles = extractOutputFiles(logs, job.output_files);
         } catch (e) {
-            log('ERROR', 'خطأ في جلب السجلات', { error: e.message });
+            log('ERROR', 'Failed to get logs', { error: e.message });
             if (job.output_files && typeof job.output_files === 'object') {
                 for (const [key, filename] of Object.entries(job.output_files)) {
                     outputFiles[key] = {
@@ -540,7 +525,7 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
         jobs.set(command_id, { ...job, status: 'SUCCESS' });
         saveJobs();
 
-        log('SUCCESS', `🎉 فيديو جاهز!`, { 
+        log('SUCCESS', `Video ready!`, { 
             command_id, 
             worker: job.repo, 
             time: processingTime + 's',
@@ -560,7 +545,7 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
         });
 
     } catch (error) {
-        log('ERROR', 'خطأ في فحص الحالة', { error: error.message });
+        log('ERROR', 'Status check failed', { error: error.message });
         res.json({
             command_id: req.params.command_id,
             status: 'PROCESSING',
@@ -579,7 +564,7 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
     res.json({
-        service: 'FFmpeg API - بديل Rendi.dev مجاني',
+        service: 'FFmpeg API - Free Rendi.dev Alternative',
         version: '2.0.0',
         engines: ['ffmpeg', 'remotion'],
         workers: WORKER_REPOS,
@@ -589,9 +574,9 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 السيرفر شغال على المنفذ ${PORT}`);
-    console.log(`👷 العمال: ${WORKER_REPOS.length}`);
-    console.log(`👤 المستخدم: ${GITHUB_USERNAME}`);
-    console.log(`🎬 المحركات: FFmpeg + Remotion`);
-    console.log(`📊 نظام التسجيل: نشط`);
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`👷 Workers: ${WORKER_REPOS.length}`);
+    console.log(`👤 User: ${GITHUB_USERNAME}`);
+    console.log(`🎬 Engines: FFmpeg + Remotion`);
+    console.log(`📊 Logging: Active`);
 });
