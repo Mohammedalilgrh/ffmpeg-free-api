@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     # 2 minutes is enough because the Docker image already has
     # ffmpeg, remotion, chrome, awscli — no install time wasted
-    timeout-minutes: 2
+    timeout-minutes: 15
 
     container:
       image: mohammedaligrh/video-engine:v1
@@ -95,9 +95,9 @@ jobs:
               let cmd = env.FFMPEG_COMMAND;
               const downloaded = {};
 
-              // Download input files
-              for (const [k, url] of Object.entries(inputFiles)) {
-                if (!url || !url.startsWith('http')) continue;
+              // Download input files — PARALLEL (was sequential)
+              const downloadTasks = Object.entries(inputFiles).map(async ([k, url]) => {
+                if (!url || !url.startsWith('http')) return;
                 const ext = path.extname(new URL(url).pathname) || '.mp4';
                 const lp  = path.join(tempDir, k + ext);
                 for (let attempt = 1; attempt <= 3; attempt++) {
@@ -107,8 +107,8 @@ jobs:
                       { stdio: 'inherit', timeout: 120000 }
                     );
                     downloaded[k] = lp;
-                    logInfo(`Downloaded ${k}`);
-                    break;
+                    logInfo(`Downloaded ${k} (parallel)`);
+                    return;
                   } catch (err) {
                     if (attempt === 3) {
                       logError('DOWNLOAD_FAILED', `File: ${k}, URL: ${url}, Error: ${err.message}`);
@@ -117,7 +117,8 @@ jobs:
                     await new Promise(r => setTimeout(r, 2000));
                   }
                 }
-              }
+              });
+              await Promise.all(downloadTasks);
 
               // Download compressed input folder if provided
               if (env.INPUT_COMPRESSED_FOLDER) {
@@ -143,11 +144,17 @@ jobs:
               logInfo('Running FFmpeg: ' + cmd.substring(0, 200));
               try {
                 execSync(cmd, {
-                  stdio: 'inherit',
+                  stdio: ['inherit', 'inherit', 'pipe'],
                   timeout: (parseInt(env.MAX_RUN_SECONDS || '300') + 30) * 1000
                 });
               } catch (ffmpegError) {
                 logError('FFMPEG_EXECUTION_FAILED', ffmpegError.message.substring(0, 500));
+                // Dump full ffmpeg stderr for debugging via GitHub Actions logs
+                if (ffmpegError.stderr) {
+                  const stderrStr = ffmpegError.stderr.toString();
+                  console.log('📋 FULL_FFMPEG_STDERR:');
+                  console.log(stderrStr.substring(0, 3000));
+                }
                 throw ffmpegError;
               }
 
