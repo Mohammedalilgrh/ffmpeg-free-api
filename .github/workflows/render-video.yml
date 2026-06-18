@@ -1,4 +1,4 @@
-name: ⚡ Render Video (Instant)
+name: ⚡️ Render Video (Instant)
 
 on:
   workflow_dispatch:
@@ -69,11 +69,28 @@ jobs:
           const env = process.env;
           const start = Date.now();
           
+          // ===== دالة تسجيل الأخطاء =====
+          function logError(message, details = '') {
+            const errorMsg = `❌ FFMPEG_ERROR: ${message}`;
+            if (details) {
+              console.log(`❌ FFMPEG_ERROR_DETAILS: ${details}`);
+            }
+            console.log(errorMsg);
+          }
+          
+          function logSuccess(message) {
+            console.log(`✅ FFMPEG_SUCCESS: ${message}`);
+          }
+          
+          function logInfo(message) {
+            console.log(`📘 FFMPEG_INFO: ${message}`);
+          }
+          
           let engine = env.ENGINE;
           if (engine === 'auto') {
             engine = (env.REMOTION_URL || env.REMOTION_CODE) ? 'remotion' : 'ffmpeg';
           }
-          console.log(`Engine: ${engine}`);
+          logInfo(`Engine: ${engine}`);
           
           if (engine === 'ffmpeg') {
             const tempDir = '/tmp/render_' + Date.now();
@@ -94,8 +111,11 @@ jobs:
                       execSync(`curl -L --retry 2 --max-time 60 -o "${lp}" "${url}"`, { stdio: 'inherit', timeout: 90000 });
                       downloaded[k] = lp;
                       break;
-                    } catch {
-                      if (a === 2) throw new Error('Download failed');
+                    } catch (err) {
+                      if (a === 2) {
+                        logError('DOWNLOAD_FAILED', `File: ${k}, URL: ${url}, Error: ${err.message}`);
+                        throw new Error('Download failed');
+                      }
                     }
                   }
                 }
@@ -119,19 +139,28 @@ jobs:
                 cmd = cmd.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), op);
               }
               
-              console.log('Running FFmpeg...');
-              execSync(cmd, { stdio: 'inherit', timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000 });
+              logInfo('Running FFmpeg...');
+              try {
+                execSync(cmd, { stdio: 'inherit', timeout: (parseInt(env.MAX_RUN_SECONDS) + 30) * 1000 });
+              } catch (ffmpegError) {
+                logError('FFMPEG_EXECUTION_FAILED', ffmpegError.message.substring(0, 500));
+                throw ffmpegError;
+              }
               
               for (const [k, op] of Object.entries(outputs)) {
-                if (!fs.existsSync(op)) continue;
+                if (!fs.existsSync(op)) {
+                  logError('OUTPUT_MISSING', `File: ${k}, Path: ${op}`);
+                  continue;
+                }
                 const fn = path.basename(op);
                 const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
                 
                 execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${op}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, { stdio: 'inherit', timeout: 30000 });
+                logSuccess(`VIDEO_URL_RESULT_${k}=${pu}`);
                 console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
             } catch (e) {
-              console.error('Error:', e.message);
+              logError('RENDER_FAILED', e.message.substring(0, 500));
               process.exit(1);
             } finally {
               if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -140,15 +169,23 @@ jobs:
           
           if (engine === 'remotion') {
             const duration = parseInt(env.DURATION || '3') * parseInt(env.FPS || '24');
-            const props = env.REMOTION_PROPS || '{}';
+            let props;
+            
+            // محاولة parse الـ JSON مع الإيموجي
+            try {
+              props = JSON.parse(env.REMOTION_PROPS || '{}');
+            } catch (parseError) {
+              logError('REMOTION_PROPS_PARSE_ERROR', `Invalid JSON in remotion_props_json. Error: ${parseError.message}. First 200 chars: ${(env.REMOTION_PROPS || '').substring(0, 200)}`);
+              process.exit(1);
+            }
             
             const defaultComponent = `import React from 'react';
           import {AbsoluteFill, useCurrentFrame, spring, interpolate} from 'remotion';
           export const Component = (props) => {
             const frame = useCurrentFrame();
-            const f = {fps: ${env.FPS || 24}};
+            const {fps} = {fps: ${env.FPS || 24}};
             const {title = 'Hello', subtitle = '', bg = '#0a192f', accent = '#64ffda'} = props;
-            const s = spring({frame, fps: f.fps, config: {damping: 20}});
+            const s = spring({frame, fps, config: {damping: 20}});
             const o = interpolate(frame, [0, 10], [0, 1], {extrapolateRight: 'clamp'});
             const p = frame / ${duration};
             return (
@@ -169,29 +206,43 @@ jobs:
             
             fs.mkdirSync('src', {recursive: true});
             if (env.REMOTION_URL) {
-              execSync(`curl -L --max-time 10 "${env.REMOTION_URL}" -o src/Component.tsx`, {stdio: 'inherit'});
+              try {
+                execSync(`curl -L --max-time 10 "${env.REMOTION_URL}" -o src/Component.tsx`, {stdio: 'inherit'});
+              } catch (urlError) {
+                logError('COMPONENT_URL_FAILED', urlError.message);
+                process.exit(1);
+              }
             } else {
               fs.writeFileSync('src/Component.tsx', componentCode);
             }
             
+            // استخدام props مباشرة (كـ Object) مو string
+            const propsString = JSON.stringify(props);
+            
             fs.writeFileSync('src/index.ts', `import {registerRoot} from 'remotion';import {RemotionRoot} from './Root';registerRoot(RemotionRoot);`);
-            fs.writeFileSync('src/Root.tsx', `import {Composition} from 'remotion';import {Component} from './Component';export const RemotionRoot = () => {const p=JSON.parse('${props.replace(/'/g,"\\'")}');return <Composition id="V" component={Component} durationInFrames={${duration}} fps={${env.FPS||24}} width={${env.WIDTH||1280}} height={${env.HEIGHT||720}} defaultProps={p} />;};`);
+            fs.writeFileSync('src/Root.tsx', `import {Composition} from 'remotion';import {Component} from './Component';export const RemotionRoot = () => {const p=${propsString};return <Composition id="V" component={Component} durationInFrames={${duration}} fps={${env.FPS||24}} width={${env.WIDTH||1280}} height={${env.HEIGHT||720}} defaultProps={p} />;};`);
             
             const outputFiles = JSON.parse(env.OUTPUT_FILES_JSON || '{}');
             for (const [k, fn] of Object.entries(outputFiles)) {
-              console.log('Rendering...');
-              execSync(`npx remotion render V "${fn}" --props='${props}' --fps=${env.FPS||24} --codec=h264 --concurrency=4`, {stdio: 'inherit'});
+              logInfo('Rendering Remotion...');
+              try {
+                execSync(`npx remotion render V "${fn}" --props='${propsString.replace(/'/g, "'\\''")}' --fps=${env.FPS||24} --codec=h264 --concurrency=4`, {stdio: 'inherit'});
+              } catch (renderError) {
+                logError('REMOTION_RENDER_FAILED', renderError.message.substring(0, 500));
+                process.exit(1);
+              }
               
               if (fs.existsSync(fn)) {
                 const pu = env.R2_PUBLIC_URL.replace(/\/$/, '') + '/' + fn;
                 execSync(`AWS_ACCESS_KEY_ID=${env.R2_ACCESS_KEY} AWS_SECRET_ACCESS_KEY=${env.R2_SECRET_KEY} aws s3 cp "${fn}" "s3://${env.R2_BUCKET}/${fn}" --endpoint-url ${env.R2_ENDPOINT} --acl public-read --no-verify-ssl`, {stdio: 'inherit', timeout: 30000});
+                logSuccess(`VIDEO_URL_RESULT_${k}=${pu}`);
                 console.log(`VIDEO_URL_RESULT_${k}=${pu}`);
               }
             }
           }
           
           const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-          console.log(`Done in ${elapsed}s`);
+          logSuccess(`Done in ${elapsed}s`);
           console.log(`COMMAND_ID=${env.COMMAND_ID}`);
           RENDEREOF
           
