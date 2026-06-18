@@ -191,30 +191,65 @@ function extractOutputFiles(logs, outputFiles) {
 // ============== API ENDPOINTS ==============
 
 // POST /v1/run-ffmpeg-command
-app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
-    try {
-        const {
-            ffmpeg_command,
-            input_files,
-            output_files,
-            max_command_run_seconds = 300,
-            vcpu_count = 8,
-            metadata,
-            input_compressed_folder
-        } = req.body;
+app.post('/v1/run-ffmpeg-command', async (req, res) => {
+  try {
+    const { 
+      ffmpeg_command,
+      input_files = {},
+      output_files = {},
+      command_id = 'cmd_' + Date.now(),
+      max_command_run_seconds = '300',
+      vcpu_count = '8',
+      metadata = {},
+      // 🆕 Remotion support
+      engine = 'ffmpeg',
+      remotion_props_json = '{}',
+      remotion_component_url = '',
+      duration = '5',
+      fps = '30',
+      width = '1080',
+      height = '1920'
+    } = req.body;
 
-        // التحقق من الحقول المطلوبة
-        if (!ffmpeg_command) {
-            return res.status(422).json({
-                detail: [{ loc: ['body', 'ffmpeg_command'], msg: 'Field required', type: 'missing' }]
-            });
-        }
+    // ========== REMOTION ENGINE ==========
+    if (engine === 'remotion') {
+      const workerIndex = currentWorker % WORKER_REPOS.length;
+      const workerRepo = WORKER_REPOS[workerIndex];
+      currentWorker++;
 
-        if (!output_files) {
-            return res.status(422).json({
-                detail: [{ loc: ['body', 'output_files'], msg: 'Field required', type: 'missing' }]
-            });
-        }
+      jobs[command_id] = {
+        command_id,
+        status: 'PENDING',
+        worker: workerRepo,
+        created_at: new Date().toISOString(),
+        type: 'REMOTION'
+      };
+
+      await dispatchWorkflow(workerRepo, {
+        engine: 'remotion',
+        remotion_props_json: remotion_props_json,
+        output_files_json: JSON.stringify(output_files),
+        duration: duration,
+        fps: fps,
+        width: width,
+        height: height,
+        command_id: command_id,
+        remotion_component_url: remotion_component_url
+      });
+
+      jobs[command_id].status = 'PROCESSING';
+      saveJobs();
+      return res.json({ command_id, status: 'PROCESSING' });
+    }
+
+    // ========== FFMPEG ENGINE (الكود القديم) ==========
+    if (!ffmpeg_command) {
+      return res.status(422).json({ 
+        detail: [{ loc: ['body', 'ffmpeg_command'], msg: 'Field required', type: 'missing' }] 
+      });
+    }
+
+    // ... هنا يستمر كود FFmpeg القديم ...
 
         // التحقق من صحة المفاتيح
         try { validateKeys(input_files, output_files); } catch (error) {
