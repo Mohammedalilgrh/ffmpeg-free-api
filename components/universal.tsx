@@ -63,6 +63,14 @@ export const UniversalComponent = (props) => {
     // متقدم
     customCSS = '',
     customJS = '',
+
+    // ========== إضافة بروبس التقسيم (Split) ==========
+    leftVideoUrl = '',
+    rightVideoUrl = '',
+    leftColor = '#E53935',
+    rightColor = '#1E88E5',
+    leftLabel = 'Always be Hot',
+    rightLabel = 'Always be Cold',
     
   } = props;
 
@@ -137,7 +145,7 @@ export const UniversalComponent = (props) => {
 
   // ========== توليد الجسيمات ==========
   const ParticleSystem = () => {
-    if (!particles) return null;
+    if (!particles || layout === 'split') return null; // Disable particles for split screen
     
     return (
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
@@ -184,6 +192,7 @@ export const UniversalComponent = (props) => {
         backgroundColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)',
         borderRadius: 2,
         overflow: 'hidden',
+        zIndex: 10
       }}>
         <div style={{
           height: '100%',
@@ -205,7 +214,7 @@ export const UniversalComponent = (props) => {
       bottom: { alignItems: 'center', justifyContent: 'flex-end', textAlign: 'center', paddingBottom: 100 },
       left: { alignItems: 'flex-start', justifyContent: 'center', textAlign: 'left', paddingLeft: 80 },
       right: { alignItems: 'flex-end', justifyContent: 'center', textAlign: 'right', paddingRight: 80 },
-      split: { alignItems: 'flex-start', justifyContent: 'center', textAlign: 'left' },
+      split: { alignItems: 'center', justifyContent: 'center', textAlign: 'center', flexDirection: 'row' },
     };
     
     return layouts[layout] || layouts.center;
@@ -245,6 +254,84 @@ export const UniversalComponent = (props) => {
     );
   };
 
+  // ==========================================
+  // ========== 📌 قسم الشاشة المنقسمة ==========
+  // ==========================================
+  if (layout === 'split' && leftVideoUrl && rightVideoUrl) {
+    return (
+      <AbsoluteFill style={{ flexDirection: 'row', display: 'flex', overflow: 'hidden' }}>
+        
+        {/* الجانب الأيسر - أحمر */}
+        <div style={{ flex: 1, height: '100%', position: 'relative', backgroundColor: leftColor, overflow: 'hidden' }}>
+          <video 
+            src={leftVideoUrl} 
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.7 }} 
+            autoPlay 
+            loop 
+            muted 
+          />
+          <div style={{ position: 'absolute', bottom: 50, width: '100%', textAlign: 'center', zIndex: 2 }}>
+            <h1 style={{ 
+              color: '#FFFFFF', 
+              fontSize: 48, 
+              fontWeight: 900, 
+              textShadow: '0 4px 15px rgba(0,0,0,0.6)',
+              margin: 0
+            }}>
+              {leftLabel}
+            </h1>
+          </div>
+          {/* "OR" في المنتصف */}
+          <div style={{ position: 'absolute', right: -30, top: '50%', transform: 'translateY(-50%)', zIndex: 5 }}>
+            <div style={{
+              background: '#000000',
+              color: '#FFFFFF',
+              borderRadius: '50%',
+              width: 70,
+              height: 70,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 24,
+              fontWeight: 900,
+              border: '4px solid #FFFFFF',
+              boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
+            }}>
+              OR
+            </div>
+          </div>
+        </div>
+
+        {/* الجانب الأيمن - أزرق */}
+        <div style={{ flex: 1, height: '100%', position: 'relative', backgroundColor: rightColor, overflow: 'hidden' }}>
+          <video 
+            src={rightVideoUrl} 
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.7 }} 
+            autoPlay 
+            loop 
+            muted 
+          />
+          <div style={{ position: 'absolute', bottom: 50, width: '100%', textAlign: 'center', zIndex: 2 }}>
+            <h1 style={{ 
+              color: '#FFFFFF', 
+              fontSize: 48, 
+              fontWeight: 900, 
+              textShadow: '0 4px 15px rgba(0,0,0,0.6)',
+              margin: 0
+            }}>
+              {rightLabel}
+            </h1>
+          </div>
+        </div>
+
+        <ProgressBar />
+      </AbsoluteFill>
+    );
+  }
+
+  // ==========================================
+  // ========== 📌 العودة للنمط العادي ==========
+  // ==========================================
   return (
     <AbsoluteFill style={{
       background: finalBg,
