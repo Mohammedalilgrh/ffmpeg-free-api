@@ -69,13 +69,9 @@ jobs:
           const env = process.env;
           const start = Date.now();
           
-          // ===== دالة تسجيل الأخطاء =====
           function logError(message, details = '') {
-            const errorMsg = `❌ FFMPEG_ERROR: ${message}`;
-            if (details) {
-              console.log(`❌ FFMPEG_ERROR_DETAILS: ${details}`);
-            }
-            console.log(errorMsg);
+            console.log(`❌ FFMPEG_ERROR: ${message}`);
+            if (details) console.log(`❌ FFMPEG_ERROR_DETAILS: ${details}`);
           }
           
           function logSuccess(message) {
@@ -171,11 +167,10 @@ jobs:
             const duration = parseInt(env.DURATION || '3') * parseInt(env.FPS || '24');
             let props;
             
-            // محاولة parse الـ JSON مع الإيموجي
             try {
               props = JSON.parse(env.REMOTION_PROPS || '{}');
             } catch (parseError) {
-              logError('REMOTION_PROPS_PARSE_ERROR', `Invalid JSON in remotion_props_json. Error: ${parseError.message}. First 200 chars: ${(env.REMOTION_PROPS || '').substring(0, 200)}`);
+              logError('REMOTION_PROPS_PARSE_ERROR', `Invalid JSON. Error: ${parseError.message}`);
               process.exit(1);
             }
             
@@ -216,7 +211,6 @@ jobs:
               fs.writeFileSync('src/Component.tsx', componentCode);
             }
             
-            // استخدام props مباشرة (كـ Object) مو string
             const propsString = JSON.stringify(props);
             
             fs.writeFileSync('src/index.ts', `import {registerRoot} from 'remotion';import {RemotionRoot} from './Root';registerRoot(RemotionRoot);`);
