@@ -16,7 +16,11 @@ const WORKER_REPOS = [
   'ffmpeg-api-3',
   'ffmpeg-api-4',
   'ffmpeg-api-5',
-  'ffmpeg-api-6'
+  'ffmpeg-api-6',
+  'ffmpeg-api-7',
+  'ffmpeg-api-8',
+  'ffmpeg-api-9',
+  'ffmpeg-api-10'
 ];
 
 let currentRepoIndex = 0;
