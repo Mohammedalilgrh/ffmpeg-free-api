@@ -93,28 +93,9 @@ function authMiddleware(req, res, next) {
 // SMART WORKER SELECTION
 // ─────────────────────────────────────────────
 async function getNextRepo() {
-  try {
-    const checks = WORKER_REPOS.map(async (repo) => {
-      try {
-        const res = await fetch(`https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/runs?status=in_progress&per_page=1`,
-          { headers: { 'Authorization': `token ${GITHUB_TOKEN}` } });
-        if (!res.ok) return { repo, busy: false };
-        const data = await res.json();
-        return { repo, busy: (data.workflow_runs?.length || 0) > 0 };
-      } catch { return { repo, busy: false }; }
-    });
-    const results = await Promise.all(checks);
-    const free = results.find(r => !r.busy);
-    const chosen = free ? free.repo : WORKER_REPOS[currentRepoIndex % WORKER_REPOS.length];
-    currentRepoIndex++;
-    log('WORKER', `Selected worker`, { worker: chosen, status: free ? 'free' : 'all-busy-fallback' });
-    return chosen;
-  } catch (err) {
-    const chosen = WORKER_REPOS[currentRepoIndex % WORKER_REPOS.length];
-    currentRepoIndex++;
-    log('WARN', `Availability check failed, using round-robin`, { worker: chosen });
-    return chosen;
-  }
+  const repo = WORKER_REPOS[Math.floor(Math.random() * WORKER_REPOS.length)];
+  log('WORKER', `Selected worker`, { worker: repo });
+  return repo;
 }
 
 function validateKeys(input_files, output_files) {
