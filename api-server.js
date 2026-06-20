@@ -21,9 +21,8 @@ const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_TASKS || '50');
 let activeTasks = 0;
 
 const WORKER_REPOS = [
-  'ffmpeg-api', 'ffmpeg-api-2', 'ffmpeg-api-3', 'ffmpeg-api-4',
-  'ffmpeg-api-5', 'ffmpeg-api-6', 'ffmpeg-api-7', 'ffmpeg-api-8',
-  'ffmpeg-api-9', 'ffmpeg-api-10'
+  'ffmpeg-api', 'ffmpeg-api-2', 'ffmpeg-api-3',
+  'ffmpeg-api-4', 'ffmpeg-api-5', 'ffmpeg-api-6'
 ];
 
 let currentRepoIndex = 0;
