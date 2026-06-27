@@ -1,0 +1,359 @@
+# ============================================================================
+# Transcribe Audio Workflow - Speech-to-Text + Audio Analysis
+# ============================================================================
+# Uses: whisper.cpp for fast STT + FFprobe/FFmpeg for audio analysis
+# ============================================================================
+name: Transcribe Audio
+on:
+  workflow_dispatch:
+    inputs:
+      audio_url:
+        required: false
+        type: string
+        default: ''
+      audio_base64:
+        required: false
+        type: string
+        default: ''
+      language:
+        required: false
+        type: string
+        default: 'auto'
+      model_size:
+        required: false
+        type: string
+        default: 'base'
+      word_timestamps:
+        required: false
+        type: string
+        default: 'true'
+      output_files_json:
+        required: true
+        type: string
+      command_id:
+        required: true
+        type: string
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-venv git build-essential
+          echo "✅ System deps installed"
+
+      - name: Set up Python + Whisper
+        run: |
+          python3 -m venv /opt/whisper-env
+          source /opt/whisper-env/bin/activate
+          pip3 install --quiet --upgrade pip
+          pip3 install --quiet openai-whisper tqdm
+          echo "✅ Whisper installed"
+
+      - name: Download audio file
+        run: |
+          mkdir -p /tmp/audio_in
+          mkdir -p /tmp/audio_out
+
+          AUDIO_URL="${{ github.event.inputs.audio_url }}"
+          AUDIO_B64="${{ github.event.inputs.audio_base64 }}"
+
+          if [ -n "$AUDIO_URL" ]; then
+            echo "📥 Downloading audio from URL..."
+            curl -L --retry 3 --max-time 300 -o /tmp/audio_in/input_audio \
+              "$AUDIO_URL" || { echo "❌ Download failed"; exit 1; }
+          elif [ -n "$AUDIO_B64" ]; then
+            echo "📥 Decoding base64 audio..."
+            echo "$AUDIO_B64" | base64 -d > /tmp/audio_in/input_audio || { echo "❌ Base64 decode failed"; exit 1; }
+          else
+            echo "❌ No audio source provided"
+            exit 1
+          fi
+
+          echo "✅ Audio downloaded $(ls -lh /tmp/audio_in/input_audio | awk '{print $5}')"
+
+      - name: Detect audio format and convert to 16kHz WAV
+        run: |
+          echo "🔍 Detecting audio format..."
+          file /tmp/audio_in/input_audio
+
+          # Get format info
+          FORMAT=$(ffprobe -v quiet -show_format -print_format json /tmp/audio_in/input_audio 2>/dev/null || echo "{}")
+          echo "FORMAT_JSON=$FORMAT" >> $GITHUB_ENV
+
+          # Convert to 16kHz mono WAV for Whisper
+          echo "🔄 Converting to 16kHz mono WAV..."
+          ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
+            /tmp/audio_in/converted.wav 2>/dev/null || {
+            echo "❌ Conversion failed"
+            exit 1
+          }
+          echo "✅ Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
+
+      - name: Extract detailed audio metadata with FFprobe
+        id: audio_metadata
+        run: |
+          echo "📊 Extracting audio metadata..."
+
+          # Full probe info
+          ffprobe -v quiet -show_format -show_streams \
+            -print_format json /tmp/audio_in/converted.wav > /tmp/audio_metadata.json
+
+          # Silence detection
+          echo "🔇 Detecting silence segments..."
+          ffmpeg -i /tmp/audio_in/converted.wav -af silencedetect=noise=-30dB:d=0.3 \
+            -f null - 2>&1 | tee /tmp/silence_raw.txt
+
+          # Parse silence into JSON
+          cat > /tmp/parse_silence.py << 'PYEOF'
+import json, re
+
+with open('/tmp/silence_raw.txt') as f:
+    text = f.read()
+
+silence_start = re.findall(r'silence_start:\s*([\d.]+)', text)
+silence_end = re.findall(r'silence_end:\s*([\d.]+)', text)
+silence_duration = re.findall(r'silence_duration:\s*([\d.]+)', text)
+
+silences = []
+for i in range(len(silence_start)):
+    silences.append({
+        "start": round(float(silence_start[i]), 3),
+        "end": round(float(silence_end[i]), 3) if i < len(silence_end) else round(float(silence_start[i]) + 0.3, 3),
+        "duration": round(float(silence_duration[i]), 3) if i < len(silence_duration) else 0.3
+    })
+
+with open('/tmp/silence_gaps.json', 'w') as f:
+    json.dump({"silence_gaps": silences, "total_silence_seconds": round(sum(s["duration"] for s in silences), 3)}, f)
+
+print(f"Found {len(silences)} silence gaps")
+PYEOF
+          python3 /tmp/parse_silence.py
+
+          echo "✅ Audio metadata extracted"
+
+      - name: Run Whisper Speech-to-Text
+        id: whisper
+        run: |
+          source /opt/whisper-env/bin/activate
+
+          MODEL="${{ github.event.inputs.model_size }}"
+          LANG="${{ github.event.inputs.language }}"
+          WORD_TS="${{ github.event.inputs.word_timestamps }}"
+
+          echo "🎤 Running Whisper (model=$MODEL, language=$LANG)..."
+          echo "⚠️ First run downloads the model (~150MB for 'base')"
+
+          WHISPER_ARGS="/tmp/audio_in/converted.wav --model $MODEL --output_dir /tmp/whisper_output --output_format json"
+
+          if [ "$LANG" != "auto" ]; then
+            WHISPER_ARGS="$WHISPER_ARGS --language $LANG"
+          fi
+
+          if [ "$WORD_TS" = "true" ]; then
+            WHISPER_ARGS="$WHISPER_ARGS --word_timestamps True"
+          fi
+
+          # Run whisper
+          python3 -c "
+import whisper, json, sys
+
+model = whisper.load_model('$MODEL')
+lang = None if '$LANG' == 'auto' else '$LANG'
+
+result = model.transcribe(
+    '/tmp/audio_in/converted.wav',
+    language=lang,
+    word_timestamps=$WORD_TS,
+    verbose=False
+)
+
+# Save full result
+with open('/tmp/whisper_result.json', 'w') as f:
+    json.dump(result, f, ensure_ascii=False, indent=2)
+
+# Extract word-level timestamps
+words = []
+for seg in result.get('segments', []):
+    for w in seg.get('words', []):
+        words.append({
+            'word': w.get('word', '').strip(),
+            'start': round(w.get('start', 0), 3),
+            'end': round(w.get('end', 0), 3),
+            'confidence': round(w.get('probability', w.get('confidence', 0)), 3)
+        })
+
+# Also store segment-level if no word timestamps
+if not words:
+    for seg in result.get('segments', []):
+        words.append({
+            'word': seg.get('text', '').strip(),
+            'start': round(seg.get('start', 0), 3),
+            'end': round(seg.get('end', 0), 3),
+            'confidence': round(seg.get('confidence', 0), 3)
+        })
+
+# Running word count for position
+for i, w in enumerate(words):
+    w['index'] = i
+
+print(f'Transcribed {len(words)} words/segments')
+print(f'Language detected: {result.get(\"language\", \"unknown\")}')
+print(f'FULL_TRANSCRIPT: {json.dumps(result[\"text\"], ensure_ascii=False)}')
+
+# Save simplified word list
+with open('/tmp/words_timestamps.json', 'w') as f:
+    json.dump(words, f, ensure_ascii=False, indent=2)
+
+# Save detected language
+with open('/tmp/detected_lang.json', 'w') as f:
+    json.dump({'language': result.get('language', ''), 'segments': len(result.get('segments', []))}, f)
+" 2>&1 || { echo "❌ Whisper failed"; cat /tmp/whisper_result.json 2>/dev/null; exit 1; }
+
+          echo "✅ Transcription complete"
+
+      - name: Build final transcript JSON
+        id: build_json
+        run: |
+          echo "📦 Building final transcript JSON..."
+
+          cat > /tmp/build_report.py << 'PYEOF'
+import json, os, re
+
+# Load all pieces
+with open('/tmp/audio_metadata.json') as f:
+    audio_info = json.load(f)
+
+with open('/tmp/whisper_result.json') as f:
+    whisper_result = json.load(f)
+
+with open('/tmp/words_timestamps.json') as f:
+    words = json.load(f)
+
+with open('/tmp/silence_gaps.json') as f:
+    silence_data = json.load(f)
+
+with open('/tmp/detected_lang.json') as f:
+    lang_data = json.load(f)
+
+# Extract format info
+fmt = audio_info.get('format', {})
+streams = audio_info.get('streams', [])
+audio_stream = next((s for s in streams if s.get('codec_type') == 'audio'), {})
+
+duration = float(fmt.get('duration', audio_stream.get('duration', 0)))
+
+# Calculate speech metrics
+total_speech = duration - silence_data['total_silence_seconds']
+speaking_rate = len(words) / (total_speech / 60) if total_speech > 0 else 0
+
+# Build segments array
+segments = []
+for seg in whisper_result.get('segments', []):
+    segments.append({
+        'id': seg.get('id', 0),
+        'start': round(seg.get('start', 0), 3),
+        'end': round(seg.get('end', 0), 3),
+        'text': seg.get('text', '').strip(),
+        'confidence': round(seg.get('confidence', 0), 3)
+    })
+
+# Build the final report
+report = {
+    "type": "transcription",
+    "command_id": "${{ github.event.inputs.command_id }}",
+    "transcript": {
+        "full_text": whisper_result.get('text', '').strip(),
+        "language": lang_data.get('language', 'unknown'),
+        "model": "${{ github.event.inputs.model_size }}",
+        "segments": segments,
+        "words": words
+    },
+    "audio_metadata": {
+        "duration_seconds": round(duration, 3),
+        "sample_rate": int(audio_stream.get('sample_rate', 0)),
+        "channels": int(audio_stream.get('channels', 1)),
+        "codec": audio_stream.get('codec_name', 'unknown'),
+        "bit_rate": int(fmt.get('bit_rate', 0)),
+        "format_name": fmt.get('format_name', 'unknown'),
+        "size_bytes": int(fmt.get('size', 0))
+    },
+    "speech_analysis": {
+        "total_words": len(words),
+        "total_speech_seconds": round(total_speech, 3),
+        "total_silence_seconds": round(silence_data['total_silence_seconds'], 3),
+        "speech_to_silence_ratio": round(total_speech / silence_data['total_silence_seconds'], 2) if silence_data['total_silence_seconds'] > 0 else None,
+        "speaking_rate_wpm": round(speaking_rate, 1),
+        "average_word_confidence": round(sum(w.get('confidence', 1) for w in words) / len(words), 3) if words else 0,
+        "silence_gaps": silence_data['silence_gaps']
+    }
+}
+
+# Save final report
+output_path = '/tmp/final_transcript.json'
+with open(output_path, 'w', encoding='utf-8') as f:
+    json.dump(report, f, ensure_ascii=False, indent=2)
+
+print(f"✅ Report built: {len(words)} words, {len(segments)} segments, {round(duration, 1)}s duration")
+PYEOF
+          python3 /tmp/build_report.py
+
+      - name: Upload result to Cloudflare R2
+        run: |
+          npm init -y && npm install @aws-sdk/client-s3
+
+          node -e "
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const fs = require('fs');
+          const path = require('path');
+
+          async function upload() {
+            const s3 = new S3Client({
+              region: 'auto',
+              endpoint: process.env.R2_ENDPOINT,
+              credentials: {
+                accessKeyId: process.env.R2_ACCESS_KEY,
+                secretAccessKey: process.env.R2_SECRET_KEY
+              },
+              forcePathStyle: true
+            });
+
+            const outputFiles = JSON.parse(process.env.OUTPUT_FILES_JSON || '{}');
+            const reportPath = '/tmp/final_transcript.json';
+            const reportData = fs.readFileSync(reportPath, 'utf-8');
+
+            for (const [key, filename] of Object.entries(outputFiles)) {
+              await s3.send(new PutObjectCommand({
+                Bucket: process.env.R2_BUCKET,
+                Key: filename,
+                Body: reportData,
+                ContentType: 'application/json'
+              }));
+              const url = process.env.R2_PUBLIC_URL.replace(/\\/\$/, '') + '/' + filename;
+              console.log('RESULT_URL_' + key + '=' + url);
+              console.log('✅ Transcript uploaded: ' + url);
+            }
+
+            // Also print the first 200 chars of transcript for logs
+            const report = JSON.parse(reportData);
+            const preview = report.transcript.full_text.substring(0, 200);
+            console.log('📝 TRANSCRIPT_PREVIEW: ' + preview);
+            console.log('📊 WORDS: ' + report.speech_analysis.total_words);
+            console.log('🎯 LANGUAGE: ' + report.transcript.language);
+            console.log('⚡ WPM: ' + report.speech_analysis.speaking_rate_wpm);
+          }
+
+          upload().catch(e => { console.error(e); process.exit(1); });
+          "
+        env:
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          OUTPUT_FILES_JSON: ${{ github.event.inputs.output_files_json }}

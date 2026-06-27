@@ -114,8 +114,11 @@ function validateKeys(input_files, output_files) {
 // GITHUB WORKFLOW TRIGGER
 // ─────────────────────────────────────────────
 async function triggerWorkflow(repo, inputs) {
-  const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/render-video.yml/dispatches`;
-  log('VIDEO', `Triggering workflow on ${repo}`, { worker: repo, engine: inputs.engine || 'ffmpeg' });
+  const workflowFile = inputs.engine === 'transcribe' ? 'transcribe-audio.yml'
+    : inputs.engine === 'audioprobe' ? 'audio-probe.yml'
+    : 'render-video.yml';
+  const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/${workflowFile}/dispatches`;
+  log('VIDEO', `Triggering ${workflowFile} on ${repo}`, { worker: repo, engine: inputs.engine || 'ffmpeg' });
 
   try {
     const response = await fetch(url, {
@@ -167,12 +170,17 @@ async function checkRunStatus(repo, runId) {
   }
 }
 
-function buildOutputFiles(jobOutputFiles) {
+function buildOutputFiles(jobOutputFiles, jobType = 'FFMPEG') {
   const outputFiles = {};
   if (jobOutputFiles && typeof jobOutputFiles === 'object') {
     for (const [key, filename] of Object.entries(jobOutputFiles)) {
       const url = `${R2_PUBLIC_URL.replace(/\/$/, '')}/${filename}`;
-      outputFiles[key] = { storage_url: url, url, file_id: uuidv4(), status: 'STORED', file_type: 'video', mime_type: 'video/mp4' };
+      const isTranscript = jobType === 'TRANSCRIBE' || filename.endsWith('.json');
+      outputFiles[key] = {
+        storage_url: url, url, file_id: uuidv4(), status: 'STORED',
+        file_type: isTranscript ? 'json' : 'video',
+        mime_type: isTranscript ? 'application/json' : 'video/mp4'
+      };
     }
   }
   return outputFiles;
@@ -189,7 +197,24 @@ async function checkAllProcessingJobs() {
       if (!runData || runData.status !== 'completed') return;
 
       if (runData.conclusion === 'success') {
-        jobs.set(command_id, { ...job, status: 'SUCCESS', output_files: buildOutputFiles(job.output_files), completed_at: Date.now() });
+        jobs.set(command_id, { ...job, status: 'SUCCESS', output_files: buildOutputFiles(job.output_files, job.type), completed_at: Date.now() });
+
+        // For transcribe/probe jobs, auto-fetch result JSON
+        if (job.type === 'TRANSCRIBE' || job.type === 'AUDIO_PROBE') {
+          const updatedJob = jobs.get(command_id);
+          const resultUrl = updatedJob?.output_files?.out_transcript?.url || updatedJob?.output_files?.out_probe?.url;
+          if (resultUrl) {
+            try {
+              const resp = await fetch(resultUrl);
+              if (resp.ok) {
+                updatedJob.probe_data = await resp.json();
+                jobs.set(command_id, updatedJob);
+                log('SUCCESS', `Background: Result fetched for ${command_id}`);
+              }
+            } catch (_) {}
+          }
+        }
+
         log('SUCCESS', `Background: Job completed!`, { command_id });
       } else if (runData.conclusion === 'failure') {
         // Extract error message from job logs
@@ -374,13 +399,23 @@ app.get('/v1/commands/:command_id', authMiddleware, async (req, res) => {
 
     const response = {
       command_id, status: job.status,
-      command_type: job.type === 'REMOTION' ? 'REMOTION_COMMAND' : 'FFMPEG_COMMAND',
+      command_type: job.type === 'REMOTION' ? 'REMOTION_COMMAND'
+        : job.type === 'TRANSCRIBE' ? 'TRANSCRIBE'
+        : job.type === 'AUDIO_PROBE' ? 'AUDIO_PROBE'
+        : 'FFMPEG_COMMAND',
       worker: job.repo, metadata: job.metadata || {}
     };
 
     if (job.status === 'SUCCESS') {
       response.output_files = job.output_files || {};
       response.total_processing_seconds = ((job.completed_at || Date.now()) - job.created_at) / 1000;
+      // For transcribe/probe jobs, include the result JSON directly for convenience
+      if (job.type === 'TRANSCRIBE' && job.transcript_data) {
+        response.transcript = job.transcript_data;
+      }
+      if (job.type === 'AUDIO_PROBE' && job.probe_data) {
+        response.probe = job.probe_data;
+      }
     }
 
     // ⚠️ IMPORTANT: Always return error info to n8n
@@ -409,7 +444,21 @@ app.post('/v1/commands/:command_id/check', authMiddleware, async (req, res) => {
       if (runData.conclusion === 'success') {
         job.status = 'SUCCESS';
         job.completed_at = Date.now();
-        job.output_files = buildOutputFiles(job.output_files);
+        job.output_files = buildOutputFiles(job.output_files, job.type);
+        // For transcribe/probe jobs, try to fetch result JSON from R2
+        if ((job.type === 'TRANSCRIBE' || job.type === 'AUDIO_PROBE') && job.output_files) {
+          try {
+            const resultUrl = job.output_files.out_transcript?.url || job.output_files.out_probe?.url;
+            if (resultUrl) {
+              const resp = await fetch(resultUrl);
+              if (resp.ok) {
+                const data = await resp.json();
+                if (job.type === 'TRANSCRIBE') job.transcript_data = data;
+                else job.probe_data = data;
+              }
+            }
+          } catch (_) { /* non-critical, URL still available */ }
+        }
       } else {
         let errorMsg = `Workflow failed: ${runData.conclusion}`;
         try {
@@ -445,6 +494,137 @@ app.post('/v1/commands/:command_id/check', authMiddleware, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// TRANSCRIBE ENDPOINTS (Speech-to-Text + Audio Analysis)
+// ─────────────────────────────────────────────
+
+// POST /v1/audio-probe - Lightweight: audio analysis ONLY (no speech-to-text)
+// Fast! No Whisper model download. Just FFmpeg probe + silence detection.
+// Accepts: audio_url (public URL) OR binary audio in body as base64
+// Returns: duration, sample_rate, channels, silence_gaps[], speaking_rate estimate
+app.post('/v1/audio-probe', authMiddleware, async (req, res) => {
+  if (activeTasks >= MAX_CONCURRENT) {
+    return res.status(429).json({ status: 'FAILED', detail: `Max ${MAX_CONCURRENT} concurrent tasks` });
+  }
+
+  try {
+    const command_id = req.body.command_id || `probe_${uuidv4().substring(0, 12)}`;
+    const audio_url = req.body.audio_url || '';
+    const audio_base64 = req.body.audio_base64 || '';
+    const metadata = req.body.metadata || {};
+
+    if (!audio_url && !audio_base64) {
+      return res.status(422).json({ status: 'FAILED', detail: 'Either audio_url or audio_base64 is required' });
+    }
+
+    const repo = await getNextRepo();
+    const output_filename = `probe_${command_id}.json`;
+    const output_files = { out_probe: output_filename };
+
+    const job = {
+      command_id, status: 'PROCESSING', repo, run_id: null,
+      created_at: Date.now(), type: 'AUDIO_PROBE',
+      output_files, metadata,
+      original_request: { audio_url }
+    };
+    jobs.set(command_id, job);
+    saveJobs();
+    activeTasks++;
+
+    const workflowInputs = {
+      engine: 'audioprobe',
+      audio_url, audio_base64,
+      output_files_json: JSON.stringify(output_files), command_id
+    };
+
+    const runId = await triggerWorkflow(repo, workflowInputs);
+    if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
+
+    log('SUCCESS', `Audio probe job started`, { command_id, worker: repo });
+    res.json({
+      command_id, status: 'PROCESSING', type: 'AUDIO_PROBE',
+      worker: repo, run_id: runId,
+      message: `Use GET /v1/commands/${command_id} to get results when ready`
+    });
+  } catch (error) {
+    activeTasks--;
+    log('ERROR', '/v1/audio-probe failed', { error: error.message });
+    res.status(500).json({ status: 'FAILED', detail: error.message });
+  }
+});
+
+// POST /v1/transcribe - Speech-to-text + audio analysis
+// Accepts: audio_url (public URL) OR binary audio in body as base64
+// Returns: job command_id to poll with /v1/commands/:id
+// Full result includes: transcript, words[], silence_gaps[], audio_metadata, speaking_rate
+app.post('/v1/transcribe', authMiddleware, async (req, res) => {
+  if (activeTasks >= MAX_CONCURRENT) {
+    return res.status(429).json({ status: 'FAILED', detail: `Max ${MAX_CONCURRENT} concurrent tasks` });
+  }
+
+  try {
+    const command_id = req.body.command_id || `transcribe_${uuidv4().substring(0, 12)}`;
+    const audio_url = req.body.audio_url || '';
+    const audio_base64 = req.body.audio_base64 || '';
+    const language = req.body.language || 'auto';      // e.g. 'en', 'ar', 'auto'
+    const model_size = req.body.model_size || 'base';   // 'tiny', 'base', 'small', 'medium', 'large'
+    const word_timestamps = req.body.word_timestamps !== false;  // default true
+    const metadata = req.body.metadata || {};
+
+    if (!audio_url && !audio_base64) {
+      return res.status(422).json({ status: 'FAILED', detail: 'Either audio_url or audio_base64 is required' });
+    }
+
+    const repo = await getNextRepo();
+
+    const output_filename = `transcript_${command_id}.json`;
+    const output_files = { out_transcript: output_filename };
+
+    const job = {
+      command_id,
+      status: 'PROCESSING',
+      repo,
+      run_id: null,
+      created_at: Date.now(),
+      type: 'TRANSCRIBE',
+      output_files,
+      metadata,
+      original_request: { audio_url, language, model_size, word_timestamps }
+    };
+    jobs.set(command_id, job);
+    saveJobs();
+    activeTasks++;
+
+    const workflowInputs = {
+      engine: 'transcribe',
+      audio_url,
+      audio_base64,
+      language,
+      model_size,
+      word_timestamps: String(!!word_timestamps),
+      output_files_json: JSON.stringify(output_files),
+      command_id
+    };
+
+    const runId = await triggerWorkflow(repo, workflowInputs);
+    if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
+
+    log('SUCCESS', `Transcribe job started`, { command_id, worker: repo, language, model_size });
+    res.json({
+      command_id,
+      status: 'PROCESSING',
+      type: 'TRANSCRIBE',
+      worker: repo,
+      run_id: runId,
+      message: `Use GET /v1/commands/${command_id} to get results when ready`
+    });
+  } catch (error) {
+    activeTasks--;
+    log('ERROR', '/v1/transcribe failed', { error: error.message });
+    res.status(500).json({ status: 'FAILED', detail: error.message });
+  }
+});
+
 // GET /health
 app.get('/health', (req, res) => {
   const activeJobs = Array.from(jobs.values()).filter(j => j.status === 'PROCESSING').length;
@@ -459,7 +639,8 @@ app.get('/', (req, res) => {
     engines: ['ffmpeg', 'remotion'],
     endpoints: [
       'POST /v1/render', 'POST /v1/run-ffmpeg-command',
-      'GET  /v1/commands/:id', 'POST /v1/commands/:id/check', 'GET /health'
+      'POST /v1/transcribe', 'POST /v1/audio-probe', 'POST /v1/commands/:id/check',
+      'GET  /v1/commands/:id', 'GET /health'
     ]
   });
 });
@@ -473,6 +654,8 @@ app.listen(PORT, () => {
   console.log(`👷 Workers: ${WORKER_REPOS.length}`);
   console.log(`👤 User: ${GITHUB_USERNAME}`);
   console.log(`⚡ Unified endpoint: POST /v1/render`);
+  console.log(`🎤 Transcribe endpoint: POST /v1/transcribe`);
+  console.log(`📊 Audio Probe endpoint: POST /v1/audio-probe`);
   console.log(`🔄 Background checker: every 20s (parallel)`);
   console.log(`🔑 Auth: x-api-key OR Authorization Bearer`);
 });

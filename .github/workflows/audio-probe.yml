@@ -1,0 +1,198 @@
+# ============================================================================
+# Audio Probe Workflow - Lightweight audio analysis (no Whisper)
+# ============================================================================
+# Fast! Just FFprobe + silence detection. No heavy model downloads.
+# Returns: duration, silence gaps, speech ratio, audio metadata.
+# ============================================================================
+name: Audio Probe
+on:
+  workflow_dispatch:
+    inputs:
+      audio_url:
+        required: false
+        type: string
+        default: ''
+      audio_base64:
+        required: false
+        type: string
+        default: ''
+      output_files_json:
+        required: true
+        type: string
+      command_id:
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg curl unzip python3
+          echo "✅ System deps installed"
+
+      - name: Download audio file
+        run: |
+          mkdir -p /tmp/audio_in
+          AUDIO_URL="${{ github.event.inputs.audio_url }}"
+          AUDIO_B64="${{ github.event.inputs.audio_base64 }}"
+
+          if [ -n "$AUDIO_URL" ]; then
+            echo "📥 Downloading audio from URL..."
+            curl -L --retry 3 --max-time 120 -o /tmp/audio_in/input_audio "$AUDIO_URL"
+          elif [ -n "$AUDIO_B64" ]; then
+            echo "$AUDIO_B64" | base64 -d > /tmp/audio_in/input_audio
+          else
+            echo "❌ No audio source"; exit 1
+          fi
+          echo "✅ Downloaded: $(ls -lh /tmp/audio_in/input_audio | awk '{print $5}')"
+
+      - name: Convert to 16kHz WAV
+        run: |
+          ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
+            /tmp/audio_in/converted.wav 2>/dev/null || {
+            echo "⚠️ Conversion failed, trying direct analysis..."
+            cp /tmp/audio_in/input_audio /tmp/audio_in/converted.wav 2>/dev/null || true
+          }
+
+      - name: Extract audio metadata (ffprobe)
+        run: |
+          echo "📊 Extracting audio metadata..."
+          ffprobe -v quiet -show_format -show_streams \
+            -print_format json /tmp/audio_in/converted.wav > /tmp/audio_metadata.json
+
+          # Extract readable summary
+          python3 -c "
+import json
+with open('/tmp/audio_metadata.json') as f: data = json.load(f)
+fmt = data.get('format', {})
+streams = data.get('streams', [])
+audio = next((s for s in streams if s.get('codec_type') == 'audio'), {})
+print(f'Duration: {fmt.get(\"duration\", \"?\")}s')
+print(f'Sample rate: {audio.get(\"sample_rate\", \"?\")} Hz')
+print(f'Channels: {audio.get(\"channels\", \"?\")}')
+print(f'Codec: {audio.get(\"codec_name\", \"?\")}')
+print(f'Format: {fmt.get(\"format_name\", \"?\")}')
+print(f'Bit rate: {fmt.get(\"bit_rate\", \"?\")} bps')
+"
+
+      - name: Detect silence + loudness + dynamic range
+        id: audio_analysis
+        run: |
+          echo "🔇 Detecting silence segments..."
+          ffmpeg -i /tmp/audio_in/converted.wav -af silencedetect=noise=-30dB:d=0.3 \
+            -f null - 2>&1 | tee /tmp/silence_raw.txt
+
+          echo "📈 Measuring loudness (EBU R128)..."
+          ffmpeg -i /tmp/audio_in/converted.wav -af ebur128=framelog=verbose \
+            -f null - 2>&1 | tee /tmp/loudness_raw.txt || true
+
+          echo "📊 Running comprehensive analysis..."
+          python3 -c "
+import json, re, math
+
+# ── Parse silence ──
+with open('/tmp/silence_raw.txt') as f: text = f.read()
+s_starts = re.findall(r'silence_start:\s*([\d.]+)', text)
+s_durs   = re.findall(r'silence_duration:\s*([\d.]+)', text)
+
+gaps = []
+for i in range(len(s_starts)):
+    ss = float(s_starts[i])
+    sd = float(s_durs[i]) if i < len(s_durs) else 0.3
+    gaps.append({'start': round(ss, 3), 'end': round(ss + sd, 3), 'duration': round(sd, 3)})
+
+# ── Parse loudness (EBU R128) ──
+with open('/tmp/loudness_raw.txt') as f: ltext = f.read()
+integrated = re.search(r'Integrated loudness:\s*([\-\d.]+)\s*LUFS', ltext)
+loudness_range = re.search(r'Loudness range:\s*([\d.]+)\s*LU', ltext)
+peak = re.search(r'Peak:\s*([\-\d.]+)\s*dBFS', ltext)
+true_peak = re.search(r'True Peak:\s*([\-\d.]+)\s*dBFS', ltext)
+
+# ── Load audio metadata ──
+with open('/tmp/audio_metadata.json') as f: fmt = json.load(f)
+astream = next((s for s in fmt.get('streams', []) if s.get('codec_type') == 'audio'), {})
+dur = float(fmt.get('format', {}).get('duration', astream.get('duration', 0)))
+
+# ── Compute speech/silence stats ──
+total_silence = round(sum(g['duration'] for g in gaps), 3)
+total_speech = round(dur - total_silence, 3)
+speech_ratio = round(total_speech / total_silence, 2) if total_silence > 0 else None
+
+# ── Speech rate estimation ──
+# Estimate: ~2.5 words per second of speech = ~150 WPM
+# This is a rough estimate without actual transcription
+# A more accurate version: use waveform energy peaks as proxy for syllable count
+avg_word_duration = 0.35  # seconds per word (rough)
+# Better estimate from silence density: more pauses = slower speech
+# If silence ratio > 0.4 = very slow, 0.2-0.4 = normal, < 0.2 = fast
+if speech_ratio:
+    if speech_ratio < 1.0: rate_factor = 0.6  # lots of silence = slow speech
+    elif speech_ratio < 2.0: rate_factor = 0.8
+    elif speech_ratio < 4.0: rate_factor = 1.0  # normal
+    else: rate_factor = 1.3  # very dense speech = fast
+else:
+    rate_factor = 1.0
+estimated_wpm = round(150 * rate_factor)
+
+# ── Build report ──
+report = {
+    'type': 'audio_probe',
+    'command_id': '${{ github.event.inputs.command_id }}',
+    'audio_metadata': {
+        'duration_seconds': round(dur, 3),
+        'sample_rate': int(astream.get('sample_rate', 0)),
+        'channels': int(astream.get('channels', 1)),
+        'codec': astream.get('codec_name', 'unknown'),
+        'bit_rate': int(fmt.get('format', {}).get('bit_rate', astream.get('bit_rate', 0))),
+        'format_name': fmt.get('format', {}).get('format_name', 'unknown'),
+        'size_bytes': int(fmt.get('format', {}).get('size', 0))
+    },
+    'speech_analysis': {
+        'total_speech_seconds': total_speech,
+        'total_silence_seconds': total_silence,
+        'speech_density_percent': round((total_speech / dur * 100) if dur > 0 else 0, 1),
+        'speech_to_silence_ratio': speech_ratio,
+        'estimated_speaking_rate_wpm': estimated_wpm,
+        'estimated_speaking_rate_label': 'slow' if estimated_wpm < 120 else 'normal' if estimated_wpm < 180 else 'fast',
+        'note': 'Speaking rate is estimated from silence density (no transcription). Use POST /v1/transcribe for exact WPM.',
+        'silence_gaps': gaps,
+        'silence_count': len(gaps),
+        'silence_density': round(len(gaps) / dur * 60, 1) if dur > 0 else 0  # gaps per minute
+    },
+    'loudness': {
+        'integrated_lufs': round(float(integrated.group(1)), 1) if integrated else None,
+        'loudness_range_lu': round(float(loudness_range.group(1)), 1) if loudness_range else None,
+        'peak_dbfs': round(float(peak.group(1)), 1) if peak else None
+    } if (integrated or peak) else None
+}
+
+with open('/tmp/final_probe.json', 'w', encoding='utf-8') as f:
+    json.dump(report, f, ensure_ascii=False, indent=2)
+
+print(f'✅ Probe complete: {round(dur, 1)}s, {len(gaps)} gaps, {estimated_wpm} est. WPM')
+print(f'🎚️  Loudness: {report[\"loudness\"] if report[\"loudness\"] else \"N/A\"}')"
+
+      - name: Upload result to Cloudflare R2
+        run: |
+          npm init -y && npm install @aws-sdk/client-s3
+          node -e "
+          const {S3Client,PutObjectCommand}=require('@aws-sdk/client-s3'),fs=require('fs');
+          async function u(){
+            const s3=new S3Client({region:'auto',endpoint:process.env.R2_ENDPOINT,credentials:{accessKeyId:process.env.R2_ACCESS_KEY,secretAccessKey:process.env.R2_SECRET_KEY},forcePathStyle:true});
+            const f=JSON.parse(process.env.OUTPUT_FILES_JSON||'{}'),d=fs.readFileSync('/tmp/final_probe.json','utf-8');
+            for(const[k,fn]of Object.entries(f)){await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:fn,Body:d,ContentType:'application/json'}));console.log('RESULT_URL_'+k+'='+process.env.R2_PUBLIC_URL.replace(/\/\$/,'')+'/'+fn);}
+          }
+          u().catch(e=>{console.error(e);process.exit(1)});"
+        env:
+          R2_ACCESS_KEY: \${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: \${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: \${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: \${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_URL: \${{ secrets.R2_PUBLIC_URL }}
+          OUTPUT_FILES_JSON: \${{ github.event.inputs.output_files_json }}

@@ -672,8 +672,359 @@ curl https://ffmpeg-api.onrender.com/v1/commands/550e8400-e29b-41d4-a716-4466554
 | **عدد العمال** | غير محدد | 6 عمال |
 | **API Key** | ✅ إجباري | ✅ اختياري |
 | **Rate Limiting** | ✅ | ✅ |
+| **Transcribe (STT)** | ❌ | ✅ **جديد** |
 | **Webhooks** | ✅ | ❌ |
 | **دعم فني** | ✅ | مجتمع GitHub |
+
+---
+
+## 🎤 Transcription & Audio Analysis API (جديد!)
+
+> **حوّل أي صوت إلى نص مكتوب مع تحليلات كاملة** — كلمات مع توقيت، فترات الصمت، سرعة الكلام، وغيرها.
+> مثالية لربط الصوت مع السكريبتات والمشاهد في n8n بدقة 100%.
+
+### POST `/v1/transcribe`
+
+يحول ملف صوتي إلى نص مكتوب مع تحليلات كاملة.
+
+#### طريقة الاستخدام
+
+**الخيار 1: رابط صوتي عام (Public URL)**
+```json
+{
+  "audio_url": "https://example.com/my-audio.mp3",
+  "language": "ar",
+  "model_size": "base",
+  "word_timestamps": true
+}
+```
+
+**الخيار 2: ملف صوتي بصيغة Base64**
+```json
+{
+  "audio_base64": "//uQxAAAAAANIAAAAAE...",
+  "language": "en",
+  "model_size": "base"
+}
+```
+
+#### المعاملات (Parameters)
+
+| الحقل | النوع | إجباري | الافتراضي | الشرح |
+|-------|-------|--------|-----------|-------|
+| `audio_url` | string | لا* | - | رابط عام للملف الصوتي (MP3, WAV, M4A, OGG...) |
+| `audio_base64` | string | لا* | - | الملف الصوتي بصيغة Base64 |
+| `language` | string | لا | `auto` | لغة الصوت (`ar`, `en`, `fr`, `auto` للكشف التلقائي) |
+| `model_size` | string | لا | `base` | دقة النموذج (`tiny` سريع, `base` وسط, `small`, `medium`, `large` دقيق) |
+| `word_timestamps` | bool | لا | `true` | هل تريد توقيت كل كلمة على حدة |
+| `command_id` | string | لا | تلقائي | ID مخصص للمتابعة (اختياري) |
+
+> *يجب توفير إما `audio_url` أو `audio_base64`
+
+#### الرد (Response)
+
+```json
+{
+  "command_id": "transcribe_a1b2c3d4e5f6",
+  "status": "PROCESSING",
+  "type": "TRANSCRIBE",
+  "worker": "ffmpeg-api-3",
+  "message": "Use GET /v1/commands/transcribe_a1b2c3d4e5f6 to get results when ready"
+}
+```
+
+### الحصول على النتيجة
+
+استخدم نفس endpoint الموجود:
+
+```
+GET /v1/commands/transcribe_a1b2c3d4e5f6
+```
+
+#### الرد عند اكتمال التحليل:
+
+```json
+{
+  "command_id": "transcribe_a1b2c3d4e5f6",
+  "status": "SUCCESS",
+  "command_type": "TRANSCRIBE",
+  "total_processing_seconds": 47.3,
+  "transcript": {
+    "full_text": "مرحباً بكم في هذا الفيديو التعليمي...",
+    "language": "ar",
+    "model": "base",
+    "segments": [
+      {
+        "id": 0,
+        "start": 0.0,
+        "end": 3.5,
+        "text": "مرحباً بكم في هذا الفيديو التعليمي",
+        "confidence": 0.98
+      }
+    ],
+    "words": [
+      {
+        "word": "مرحباً",
+        "start": 0.0,
+        "end": 0.6,
+        "confidence": 0.99,
+        "index": 0
+      },
+      {
+        "word": "بكم",
+        "start": 0.6,
+        "end": 1.0,
+        "confidence": 0.97,
+        "index": 1
+      }
+    ]
+  },
+  "audio_metadata": {
+    "duration_seconds": 30.5,
+    "sample_rate": 16000,
+    "channels": 1,
+    "codec": "pcm_s16le",
+    "format_name": "wav",
+    "size_bytes": 488000
+  },
+  "speech_analysis": {
+    "total_words": 85,
+    "total_speech_seconds": 22.3,
+    "total_silence_seconds": 8.2,
+    "speech_to_silence_ratio": 2.72,
+    "speaking_rate_wpm": 150.2,
+    "average_word_confidence": 0.95,
+    "silence_gaps": [
+      {
+        "start": 3.5,
+        "end": 4.2,
+        "duration": 0.7
+      }
+    ]
+  },
+  "output_files": {
+    "out_transcript": {
+      "url": "https://pub-xxx.r2.dev/transcript_transcribe_a1b2c3d4e5f6.json"
+    }
+  }
+}
+```
+
+#### ما راح ترجعلك (Data you get):
+
+| المعلومة | الوصف | كيف تفيدك في n8n |
+|----------|-------|------------------|
+| **`transcript.full_text`** | النص الكامل | تستخدمه كـ subtitle أو Caption |
+| **`transcript.words[].start/end`** | توقيت كل كلمة بالثانية | تحدد وقت ظهور كل كلمة في الفيديو بدقة |
+| **`transcript.segments`** | فقرات النص مع توقيتها | تقسم الفيديو إلى مشاهد حسب الكلام |
+| **`speech_analysis.silence_gaps`** | أوقات الصمت بين الكلام | تعرف وين تدرس transitions أو breaks |
+| **`speech_analysis.speaking_rate_wpm`** | سرعة الكلام (كلمة/دقيقة) | تضبط مدة العرض حسب سرعة المتحدث |
+| **`audio_metadata.duration_seconds`** | المدة الكلية للصوت | تعرف كم طول المقطع الصوتي |
+
+### أمثلة عملية لـ n8n
+
+#### مثال 1: تحويل صوت إلى نص ومزامنته مع الفيديو
+
+في n8n Workflow:
+
+1. **HTTP Request Node** → POST `/v1/transcribe`
+   ```json
+   {
+     "audio_url": "https://example.com/voiceover.mp3",
+     "language": "ar",
+     "word_timestamps": true
+   }
+   ```
+
+2. **Wait Node** → 30 seconds (أو استخدم Loop + GET /v1/commands/:id)
+
+3. **HTTP Request Node** → GET `/v1/commands/{{$json.command_id}}`
+
+4. **استخدم البيانات**:
+   ```
+   {{$json.transcript.full_text}}          ← النص الكامل
+   {{$json.transcript.words}}              ← كل كلمة بتوقيتها
+   {{$json.speech_analysis.silence_gaps}}  ← فترات الصمت
+   {{$json.speech_analysis.speaking_rate_wpm}} ← سرعة الكلام
+   ```
+
+#### مثال 2: مزامنة الصوت مع المشاهد (Scene Sync)
+
+افترض عندك مشاهد فيديو بمدة معينة، تبي تقسم النص حسب المشاهد:
+
+```javascript
+// Code Node in n8n
+const transcript = $input.first().json.transcript;
+const words = transcript.words;
+const sceneDuration = 5; // كل مشهد 5 ثواني
+
+const scenes = [];
+let currentScene = { text: "", start: words[0]?.start || 0 };
+
+words.forEach(word => {
+  if (word.end - currentScene.start > sceneDuration) {
+    scenes.push({
+      start: currentScene.start,
+      end: word.end,
+      text: currentScene.text.trim(),
+      words: words.filter(w => w.start >= currentScene.start && w.end <= word.end)
+    });
+    currentScene = { text: "", start: word.end };
+  }
+  currentScene.text += word.word + " ";
+});
+
+return scenes;
+```
+
+#### مثال 3: توليد Subtitles (SRT format)
+
+```javascript
+// Code Node in n8n - generate SRT from words
+const words = $input.first().json.transcript.words;
+const wordsPerSub = 7; // كلمات لكل subtitle
+let srt = "", counter = 1;
+
+function toSrtTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+}
+
+for (let i = 0; i < words.length; i += wordsPerSub) {
+  const chunk = words.slice(i, i + wordsPerSub);
+  srt += `${counter}\n${toSrtTime(chunk[0].start)} --> ${toSrtTime(chunk[chunk.length-1].end)}\n${chunk.map(w=>w.word).join(' ')}\n\n`;
+  counter++;
+}
+
+return srt;
+```
+
+---
+
+### نصائح لاختيار `model_size`
+
+| النموذج | السرعة | الدقة | الاستخدام |
+|---------|--------|-------|-----------|
+| `tiny` | 🚀 سريع جداً | 😐 متوسط | تجارب سريعة |
+| `base` | ⚡ سريع | 😊 جيد | **الافتراضي - recommended** |
+| `small` | 🐢 متوسط | 😄 ممتاز | نصوص دقيقة |
+| `medium` | 🐌 بطيء | 🤩 دقيق جداً | محتوى رسمي |
+| `large` | 🐢🐢 بطيء | 🏆 الأفضل | أدق تفاصيل |
+
+> 💡 النموذج `base` كافٍ 90% من الاستخدامات. استخدم `small` أو `medium` إذا كان audio quality منخفض.
+
+---
+
+### الصيغ المدعومة (Audio Formats)
+
+أي صيغة يدعمها FFmpeg:
+- MP3, WAV, M4A, AAC, OGG, FLAC, WMA
+- فيديوهات بصوت: MP4, AVI, MOV, MKV
+- المدة القصوى: ~20 دقيقة (حسب GitHub Actions timeout)
+
+---
+
+### استكشاف أخطاء Transcription
+
+#### ❌ المدة طويلة > 20 دقيقة
+**الحل:** قسم الصوت لأجزاء باستخدام FFmpeg قبل الإرسال.
+
+#### ❌ التعرف على العربية ضعيف
+**الحل:** حدد `"language": "ar"` صراحةً واستخدم `model_size: "small"` أو أكبر.
+
+#### ❌ الخطأ: "No audio source"
+**تأكد:** أرسلت إما `audio_url` (رابط عام) أو `audio_base64` (النص الكامل المشفر).
+
+#### ❌ الكلمات تنقصها الثقة (confidence منخفض)
+**الحل:** جرب `model_size: "medium"` لنتيجة أدق.
+
+---
+
+## 📊 Audio Probe API (تحليل الصوت فقط)
+
+> **لما تحتاج معلومات الصوت بدون ترجمة** — تحليل سريع للمدة، فترات الصمت، الصوت (loudness)، والتقديرات.
+> أسرع بكثير من /v1/transcribe لأنه ما يحتاج تحميل نموذج Whisper.
+
+### POST `/v1/audio-probe`
+
+#### الطلب (Request):
+
+```json
+{
+  "audio_url": "https://example.com/voiceover.mp3"
+}
+```
+
+أو Base64:
+```json
+{
+  "audio_base64": "//uQxAAAAAANIAAAAAE..."
+}
+```
+
+#### الرد عند اكتمال التحليل:
+
+```json
+{
+  "command_id": "probe_a1b2c3d4e5f6",
+  "status": "SUCCESS",
+  "command_type": "AUDIO_PROBE",
+  "probe": {
+    "audio_metadata": {
+      "duration_seconds": 45.3,
+      "sample_rate": 16000,
+      "channels": 1,
+      "codec": "pcm_s16le",
+      "format_name": "wav",
+      "size_bytes": 724800
+    },
+    "speech_analysis": {
+      "total_speech_seconds": 32.1,
+      "total_silence_seconds": 13.2,
+      "speech_density_percent": 70.9,
+      "speech_to_silence_ratio": 2.43,
+      "estimated_speaking_rate_wpm": 150,
+      "estimated_speaking_rate_label": "normal",
+      "note": "Speaking rate is estimated from silence density (no transcription). Use POST /v1/transcribe for exact WPM.",
+      "silence_gaps": [
+        {"start": 0.0, "end": 0.8, "duration": 0.8},
+        {"start": 4.2, "end": 5.1, "duration": 0.9}
+      ],
+      "silence_count": 12,
+      "silence_density": 15.9
+    },
+    "loudness": {
+      "integrated_lufs": -16.2,
+      "peak_dbfs": -1.5
+    }
+  }
+}
+```
+
+### الفرق بين `/v1/transcribe` و `/v1/audio-probe`
+
+| الميزة | `/v1/transcribe` | `/v1/audio-probe` |
+|--------|-------------------|-------------------|
+| **سرعة** | 🐢 بطيء (يحمّل Whisper ~150MB) | ⚡ سريع جداً (ثواني) |
+| **النص المكتوب** | ✅ نعم (كامل) | ❌ لا |
+| **توقيت الكلمات** | ✅ كل كلمة بتوقيتها | ❌ فقط تقدير سرعة الكلام |
+| **فترات الصمت** | ✅ دقيقة | ✅ دقيقة |
+| **Loudness** | ❌ لا | ✅ نعم (EBU R128) |
+| **مدة المعالجة** | 1-5 دقائق | 10-30 ثانية |
+| **متى تستخدم** | تحتاج النص + التوقيت الدقيق | تحتاج تحليل سريع بدون ترجمة |
+
+---
+
+#### استخدم `/v1/audio-probe` في n8n لما تريد:
+
+1. **معرفة مدة الصوت** قبل المونتاج
+2. **تحديد فترات الصمت** لوضع transitions
+3. **تقدير سرعة الكلام** لضبط مدة المشاهد
+4. **فحص مستوى الصوت** (loudness) قبل النشر
+5. **حساب كثافة الكلام** — كم ثانية كلام مقابل صمت
 
 ---
 
