@@ -532,7 +532,6 @@ app.post('/v1/audio-probe', authMiddleware, async (req, res) => {
     activeTasks++;
 
     const workflowInputs = {
-      engine: 'audioprobe',
       audio_url, audio_base64,
       output_files_json: JSON.stringify(output_files), command_id
     };
@@ -596,7 +595,6 @@ app.post('/v1/transcribe', authMiddleware, async (req, res) => {
     activeTasks++;
 
     const workflowInputs = {
-      engine: 'transcribe',
       audio_url,
       audio_base64,
       language,
