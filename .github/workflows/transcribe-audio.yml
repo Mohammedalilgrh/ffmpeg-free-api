@@ -76,18 +76,30 @@ jobs:
         run: |
           echo "Detecting audio format..."
           file /tmp/audio_in/input_audio
+          ffprobe -v quiet -show_format -print_format json /tmp/audio_in/input_audio
 
-          # Get format info
+          # Get format info for later use
           FORMAT=$(ffprobe -v quiet -show_format -print_format json /tmp/audio_in/input_audio 2>/dev/null || echo "{}")
           echo "FORMAT_JSON=$FORMAT" >> $GITHUB_ENV
 
           # Convert to 16kHz mono WAV for Whisper
           echo "Converting to 16kHz mono WAV..."
           ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
-            /tmp/audio_in/converted.wav 2>/dev/null || {
-            echo "Conversion failed"
+            /tmp/audio_in/converted.wav 2>&1
+          CONV_RESULT=$?
+          if [ $CONV_RESULT -ne 0 ]; then
+            echo "=== First attempt failed, trying with explicit stream copy ==="
+            ffmpeg -y -i /tmp/audio_in/input_audio -vn -c:a copy /tmp/audio_in/stripped 2>&1
+            ffmpeg -y -i /tmp/audio_in/stripped -ar 16000 -ac 1 \
+              /tmp/audio_in/converted.wav 2>&1
+            CONV_RESULT=$?
+          fi
+          if [ $CONV_RESULT -ne 0 ]; then
+            echo "=== All conversion attempts failed ==="
+            echo "Dumping file info..."
+            hexdump -C /tmp/audio_in/input_audio 2>/dev/null | head -5 || od -c /tmp/audio_in/input_audio 2>/dev/null | head -5
             exit 1
-          }
+          fi
           echo "Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
 
       - name: Extract detailed audio metadata with FFprobe

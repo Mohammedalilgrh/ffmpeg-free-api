@@ -43,9 +43,20 @@ jobs:
       - name: Convert to 16kHz WAV
         run: |
           ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
-            /tmp/audio_in/converted.wav 2>/dev/null || {
-            cp /tmp/audio_in/input_audio /tmp/audio_in/converted.wav 2>/dev/null || true
-          }
+            /tmp/audio_in/converted.wav 2>&1
+          CONV_RESULT=$?
+          if [ $CONV_RESULT -ne 0 ]; then
+            echo "=== First attempt failed, trying with explicit stream copy ==="
+            ffmpeg -y -i /tmp/audio_in/input_audio -vn -c:a copy /tmp/audio_in/stripped 2>&1
+            ffmpeg -y -i /tmp/audio_in/stripped -ar 16000 -ac 1 \
+              /tmp/audio_in/converted.wav 2>&1
+            CONV_RESULT=$?
+          fi
+          if [ $CONV_RESULT -ne 0 ]; then
+            echo "=== Conversion failed, trying direct copy ==="
+            cp /tmp/audio_in/input_audio /tmp/audio_in/converted.wav
+          fi
+          echo "Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
 
       - name: Extract audio metadata (ffprobe)
         run: |

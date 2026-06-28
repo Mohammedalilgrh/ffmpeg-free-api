@@ -564,7 +564,7 @@ app.post('/v1/transcribe', authMiddleware, async (req, res) => {
     const audio_url = req.body.audio_url || '';
     const audio_base64 = req.body.audio_base64 || '';
     const language = req.body.language || 'auto';      // e.g. 'en', 'ar', 'auto'
-    const model_size = req.body.model_size || 'base';   // 'tiny', 'base', 'small', 'medium', 'large'
+    const model_size = req.body.model_size || 'tiny';   // 'tiny' fastest, 'base', 'small', 'medium', 'large'
     const word_timestamps = req.body.word_timestamps !== false;  // default true
     const metadata = req.body.metadata || {};
 
