@@ -33,30 +33,56 @@ jobs:
         run: |
           mkdir -p /tmp/audio_in
           if [ -n "${{ github.event.inputs.audio_url }}" ]; then
-            curl -L --retry 3 --max-time 120 -o /tmp/audio_in/input_audio "${{ github.event.inputs.audio_url }}"
+            FILENAME=$(basename "${{ github.event.inputs.audio_url }}" | cut -d'?' -f1)
+            if [ -n "$FILENAME" ] && [ "$FILENAME" != "download" ]; then
+              curl -L --retry 3 --max-time 120 -o "/tmp/audio_in/$FILENAME" "${{ github.event.inputs.audio_url }}"
+            else
+              curl -L --retry 3 --max-time 120 -o /tmp/audio_in/input_audio "${{ github.event.inputs.audio_url }}"
+            fi
           elif [ -n "${{ github.event.inputs.audio_base64 }}" ]; then
             echo "${{ github.event.inputs.audio_base64 }}" | base64 -d > /tmp/audio_in/input_audio
           else
             echo "No audio source"; exit 1
           fi
+          echo "Downloaded: $(ls /tmp/audio_in/)"
 
       - name: Convert to 16kHz WAV
         run: |
-          ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
-            /tmp/audio_in/converted.wav 2>&1
-          CONV_RESULT=$?
-          if [ $CONV_RESULT -ne 0 ]; then
-            echo "=== First attempt failed, trying with explicit stream copy ==="
-            ffmpeg -y -i /tmp/audio_in/input_audio -vn -c:a copy /tmp/audio_in/stripped 2>&1
-            ffmpeg -y -i /tmp/audio_in/stripped -ar 16000 -ac 1 \
-              /tmp/audio_in/converted.wav 2>&1
-            CONV_RESULT=$?
+          INPUT_FILE=$(ls /tmp/audio_in/* 2>/dev/null | head -1)
+          echo "Input: $INPUT_FILE"
+          file "$INPUT_FILE"
+          ffprobe -v error -show_format -show_streams -print_format json "$INPUT_FILE" || true
+          # Try 1: normal
+          ffmpeg -y -v error -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+          # Try 2: force format detection using file probe
+          EXT=$(file "$INPUT_FILE" | grep -oiE '(mp3|ogg|opus|wav|flac|aac|m4a|wma|webm|mp4|mov|avi|mkv)' | head -1)
+          if [ -n "$EXT" ]; then
+            cp "$INPUT_FILE" "/tmp/audio_in/input.$EXT"
+            ffmpeg -y -v error -i "/tmp/audio_in/input.$EXT" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
           fi
-          if [ $CONV_RESULT -ne 0 ]; then
-            echo "=== Conversion failed, trying direct copy ==="
-            cp /tmp/audio_in/input_audio /tmp/audio_in/converted.wav
-          fi
-          echo "Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
+          # Try 3: force format based on known magic bytes (PE header detection)
+          HEX=$(xxd -l 16 "$INPUT_FILE" 2>/dev/null | head -1 || od -A x -t x1 -N 16 "$INPUT_FILE" 2>/dev/null | head -1)
+          echo "Hex header: $HEX"
+          case "$(echo "$HEX" | head -c 200)" in
+            *"fff"*) cp "$INPUT_FILE" /tmp/audio_in/input.mp3; ffmpeg -y -v error -i /tmp/audio_in/input.mp3 -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"4f676753"*) cp "$INPUT_FILE" /tmp/audio_in/input.ogg; ffmpeg -y -v error -i /tmp/audio_in/input.ogg -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"52494646"*) cp "$INPUT_FILE" /tmp/audio_in/input.wav; ffmpeg -y -v error -i /tmp/audio_in/input.wav -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"664c6143"*) cp "$INPUT_FILE" /tmp/audio_in/input.flac; ffmpeg -y -v error -i /tmp/audio_in/input.flac -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"1a45dfa3"*) cp "$INPUT_FILE" /tmp/audio_in/input.mkv; ffmpeg -y -v error -i /tmp/audio_in/input.mkv -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"0000001c66747970"*) cp "$INPUT_FILE" /tmp/audio_in/input.m4a; ffmpeg -y -v error -i /tmp/audio_in/input.m4a -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"3026b2758e66"*) cp "$INPUT_FILE" /tmp/audio_in/input.m4a; ffmpeg -y -v error -i /tmp/audio_in/input.m4a -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"464c56"*) cp "$INPUT_FILE" /tmp/audio_in/input.flv; ffmpeg -y -v error -i /tmp/audio_in/input.flv -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+          esac
+          # Try 4: -f auto
+          ffmpeg -y -v error -f auto -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+          # Try 5: ignore_unknown
+          ffmpeg -y -v error -ignore_unknown -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+          # Try 6: force WAV input (maybe it's already PCM)
+          ffmpeg -y -v error -f wav -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+          # Try 7: raw PCM
+          ffmpeg -y -v error -f s16le -ar 44100 -ac 2 -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+          echo "=== ALL ATTEMPTS FAILED ==="
+          exit 1
 
       - name: Extract audio metadata (ffprobe)
         run: |
@@ -76,7 +102,8 @@ jobs:
       - name: Run probe analysis
         run: |
           CID="${{ github.event.inputs.command_id }}"
-          echo 'aW1wb3J0IGpzb24sIHJlLCBzeXMKQ0lEID0gc3lzLmFyZ3ZbMV0Kcz1vcGVuKCcvdG1wL3NpbGVuY2VfcmF3LnR4dCcpLnJlYWQoKQpzcz1yZS5maW5kYWxsKHInc2lsZW5jZV9zdGFydDpccyooW1xkLl0rKScscykKc2Q9cmUuZmluZGFsbChyJ3NpbGVuY2VfZHVyYXRpb246XHMqKFtcZC5dKyknLHMpCmdhcHM9W10KZm9yIGkgaW4gcmFuZ2UobGVuKHNzKSk6CiAgICBnYXBzLmFwcGVuZCh7J3N0YXJ0Jzpyb3VuZChmbG9hdChzc1tpXSksMyksJ2VuZCc6cm91bmQoZmxvYXQoc3NbaV0pK2Zsb2F0KHNkW2ldKSBpZiBpPGxlbihzZCkgZWxzZSBmbG9hdChzc1tpXSkrMC4zLDMpLCdkdXJhdGlvbic6cm91bmQoZmxvYXQoc2RbaV0pIGlmIGk8bGVuKHNkKSBlbHNlIDAuMywzKX0pCmw9b3BlbignL3RtcC9sb3VkbmVzc19yYXcudHh0JykucmVhZCgpCmludGc9cmUuc2VhcmNoKHInSW50ZWdyYXRlZCBsb3VkbmVzczpccyooW1wtXGQuXSspXHMqTFVGUycsbCkKbHI9cmUuc2VhcmNoKHInTG91ZG5lc3MgcmFuZ2U6XHMqKFtcZC5dKylccypMVScsbCkKcGs9cmUuc2VhcmNoKHInUGVhazpccyooW1wtXGQuXSspXHMqZEJGUycsbCkKbT1qc29uLmxvYWQob3BlbignL3RtcC9hdWRpb19tZXRhZGF0YS5qc29uJykpCmFzXz1uZXh0KChzIGZvciBzIGluIG0uZ2V0KCdzdHJlYW1zJyxbXSkgaWYgcy5nZXQoJ2NvZGVjX3R5cGUnKT09J2F1ZGlvJykse30pCmR1cj1mbG9hdChtLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdkdXJhdGlvbicsYXNfLmdldCgnZHVyYXRpb24nLDApKSkKdHNpbD1yb3VuZChzdW0oZ1snZHVyYXRpb24nXSBmb3IgZyBpbiBnYXBzKSwzKQp0c3A9cm91bmQoZHVyLXRzaWwsMykKc3I9cm91bmQodHNwL3RzaWwsMikgaWYgdHNpbD4wIGVsc2UgTm9uZQpyZj0xLjAKaWYgc3I6CiAgICBpZiBzcjwxLjA6cmY9MC42CiAgICBlbGlmIHNyPDIuMDpyZj0wLjgKICAgIGVsaWYgc3I8NC4wOnJmPTEuMAogICAgZWxzZTpyZj0xLjMKd3BtPXJvdW5kKDE1MCpyZikKcmVwb3J0PXsndHlwZSc6J2F1ZGlvX3Byb2JlJywnY29tbWFuZF9pZCc6Q0lELCdhdWRpb19tZXRhZGF0YSc6eydkdXJhdGlvbl9zZWNvbmRzJzpyb3VuZChkdXIsMyksJ3NhbXBsZV9yYXRlJzppbnQoYXNfLmdldCgnc2FtcGxlX3JhdGUnLDApKSwnY2hhbm5lbHMnOmludChhc18uZ2V0KCdjaGFubmVscycsMSkpLCdjb2RlYyc6YXNfLmdldCgnY29kZWNfbmFtZScsJ3Vua25vd24nKSwnYml0X3JhdGUnOmludChtLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdiaXRfcmF0ZScsYXNfLmdldCgnYml0X3JhdGUnLDApKSksJ2Zvcm1hdF9uYW1lJzptLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdmb3JtYXRfbmFtZScsJ3Vua25vd24nKSwnc2l6ZV9ieXRlcyc6aW50KG0uZ2V0KCdmb3JtYXQnLHt9KS5nZXQoJ3NpemUnLDApKX0sJ3NwZWVjaF9hbmFseXNpcyc6eyd0b3RhbF9zcGVlY2hfc2Vjb25kcyc6dHNwLCd0b3RhbF9zaWxlbmNlX3NlY29uZHMnOnRzaWwsJ3NwZWVjaF9kZW5zaXR5X3BlcmNlbnQnOnJvdW5kKHRzcC9kdXIqMTAwLDEpIGlmIGR1cj4wIGVsc2UgMCwnc3BlZWNoX3RvX3NpbGVuY2VfcmF0aW8nOnNyLCdlc3RpbWF0ZWRfc3BlYWtpbmdfcmF0ZV93cG0nOndwbSwnZXN0aW1hdGVkX3NwZWFraW5nX3JhdGVfbGFiZWwnOidzbG93JyBpZiB3cG08MTIwIGVsc2UgJ25vcm1hbCcgaWYgd3BtPDE4MCBlbHNlICdmYXN0Jywnbm90ZSc6J0VzdGltYXRlIGZyb20gc2lsZW5jZSBkZW5zaXR5LiBVc2UgUE9TVCAvdjEvdHJhbnNjcmliZSBmb3IgZXhhY3QgV1BNLicsJ3NpbGVuY2VfZ2Fwcyc6Z2Fwcywnc2lsZW5jZV9jb3VudCc6bGVuKGdhcHMpLCdzaWxlbmNlX2RlbnNpdHknOnJvdW5kKGxlbihnYXBzKS9kdXIqNjAsMSkgaWYgZHVyPjAgZWxzZSAwfSwnbG91ZG5lc3MnOnsnaW50ZWdyYXRlZF9sdWZzJzpyb3VuZChmbG9hdChpbnRnLmdyb3VwKDEpKSwxKSBpZiBpbnRnIGVsc2UgTm9uZSwnbG91ZG5lc3NfcmFuZ2VfbHUnOnJvdW5kKGZsb2F0KGxyLmdyb3VwKDEpKSwxKSBpZiBsciBlbHNlIE5vbmUsJ3BlYWtfZGJmcyc6cm91bmQoZmxvYXQocGsuZ3JvdXAoMSkpLDEpIGlmIHBrIGVsc2UgTm9uZX0gaWYgKGludGcgb3IgcGspIGVsc2UgTm9uZX0Kd2l0aCBvcGVuKCcvdG1wL2ZpbmFsX3Byb2JlLmpzb24nLCd3JykgYXMgZjoKICAgIGpzb24uZHVtcChyZXBvcnQsZixpbmRlbnQ9MikKcHJpbnQoZidSRVNVTFQ6e3JvdW5kKGR1ciwxKX1zfHtsZW4oZ2Fwcyl9Z2Fwc3x7d3BtfXdwbScpCg==' | base64 -d | python3 - "$CID"
+          INPUT_FILE=$(ls /tmp/audio_in/converted.wav 2>/dev/null || ls /tmp/audio_in/* 2>/dev/null | head -1)
+          echo 'aW1wb3J0IGpzb24sIHJlLCBzeXMKQ0lEID0gc3lzLmFyZ3ZbMV0Kcz1vcGVuKCcvdG1wL3NpbGVuY2VfcmF3LnR4dCcpLnJlYWQoKQpzcz1yZS5maW5kYWxsKHInc2lsZW5jZV9zdGFydDpccyooW1xkLl0rKScscykKc2Q9cmUuZmluZGFsbChyJ3NpbGVuY2VfZHVyYXRpb246XHMqKFtcZC5dKyknLHMpCmdhcHM9W10KZm9yIGkgaW4gcmFuZ2UobGVuKHNzKSk6CiAgICBnYXBzLmFwcGVuZCh7J3N0YXJ0Jzpyb3VuZChmbG9hdChzc1tpXSksMyksJ2VuZCc6cm91bmQoZmxvYXQoc3NbaV0pK2Zsb2F0KHNkW2ldKSBpZiBpPGxlbihzZCkgZWxzZSBmbG9hdChzc1tpXSkrMC4zLDMpLCdkdXJhdGlvbic6cm91bmQoZmxvYXQoc2RbaV0pIGlmIGk8bGVuKHNkKSBlbHNlIDAuMywzKX0pCmw9b3BlbignL3RtcC9sb3VkbmVzc19yYXcudHh0JykucmVhZCgpCmludGc9cmUuc2VhcmNoKHInSW50ZWdyYXRlZCBsb3VkbmVzczpccyooW1wtXGQuXSspXHMqTFVGUycsbCkKbHI9cmUuc2VhcmNoKHInTG91ZG5lc3MgcmFuZ2U6XHMqKFtcZC5dKylccypMVScsbCkKcGs9cmUuc2VhcmNoKHInUGVhazpccyooW1wtXGQuXSspXHMqZEJGUycsbCkKbT1qc29uLmxvYWQob3BlbignL3RtcC9hdWRpb19tZXRhZGF0YS5qc29uJykpCmFzXz1uZXh0KChzIGZvciBzIGluIG0uZ2V0KCdzdHJlYW1zJyxbXSkgaWYgcy5nZXQoJ2NvZGVjX3R5cGUnKT09J2F1ZGlvJykse30pCmR1cj1mbG9hdChtLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdkdXJhdGlvbicsYXNfLmdldCgnZHVyYXRpb24nLDApKSkKdHNpbD1yb3VuZChzdW0oZ1snZHVyYXRpb24nXSBmb3IgZyBpbiBnYXBzKSwzKQp0c3A9cm91bmQoZHVyLXRzaWwsMykKc3I9cm91bmQodHNwL3RzaWwsMikgaWYgdHNpbD4wIGVsc2UgTm9uZQpyZj0xLjAKaWYgc3I6CiAgICBpZiBzcjwxLjA6cmY9MC42CiAgICBlbGlmIHNyPDIuMDpyZj0wLjgKICAgIGVsaWYgc3I8NC4wOnJmPTEuMAogICAgZWxzZTpyZj0xLjMKd3BtPXJvdW5kKDE1MCpyZikKcmVwb3J0PXsndHlwZSc6J2F1ZGlvX3Byb2JlJywnY29tbWFuZF9pZCc6Q0lELCdhdWRpb19tZXRhZGF0YSc6eydkdXJhdGlvbl9zZWNvbmRzJzpyb3VuZChkdXIsMyksJ3NhbXBsZV9yYXRlJzppbnQoYXNfLmdldCgnc2FtcGxlX3JhdGUnLDApKSwnY2hhbm5lbHMnOmludChhc18uZ2V0KCdjaGFubmVscycsMSkpLCdjb2RlYyc6YXNfLmdldCgnY29kZWNfbmFtZScsJ3Vua25vd24nKSwnYml0X3JhdGUnOmludChtLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdiaXRfcmF0ZScsYXNfLmdldCgnYml0X3JhdGUnLDApKSksJ2Zvcm1hdF9uYW1lJzptLmdldCgnZm9ybWF0Jyx7fSkuZ2V0KCdmb3JtYXRfbmFtZScsJ3Vua25vd24nKSwnc2l6ZV9ieXRlcyc6aW50KG0uZ2V0KCdmb3JtYXQnLHt9KS5nZXQoJ3NpemUnLDApKX0sJ3NwZWVjaF9hbmFseXNpcyc6eyd0b3RhbF9zcGVlY2hfc2Vjb25kcyc6dHNwLCd0b3RhbF9zaWxlbmNlX3NlY29uZHMnOnRzaWwsJ3NwZWVjaF9kZW5zaXR5X3BlcmNlbnQnOnJvdW5kKHRzcC9kdXIqMTAwLDEpIGlmIGR1cj4wIGVsc2UgMCwnc3BlZWNoX3RvX3NpbGVuY2VfcmF0aW8nOnNyLCdlc3RpbWF0ZWRfc3BlYWtpbmdfcmF0ZV93cG0nOndwbSwnZXN0aW1hdGVkX3NwZWFraW5nX3JhdGVfbGFiZWwnOidzbG93JyBpZiB3cG08MTIwIGVsc2UgJ25vcm1hbCcgaWYgd3BtPDE4MCBlbHNlICdmYXN0Jywnbm90ZSc6J0VzdGltYXRlIGZyb20gc2lsZW5jZSBkZW5zaXR5LiBVc2UgUE9TVCAvdjEvdHJhbnNjcmliZSBmb3IgZXhhY3QgV1BNLicsJ3NpbGVuY2VfZ2Fwcyc6Z2Fwcywnc2lsZW5jZV9jb3VudCc6bGVuKGdhcHMpLCdzaWxlbmNlX2RlbnNpdHknOnJvdW5kKGxlbihnYXBzKS9kdXIqNjAsMSkgaWYgZHVyPjAgZWxzZSAwfSwnbG91ZG5lc3MnOnsnaW50ZWdyYXRlZF9sdWZzJzpyb3VuZChmbG9hdChpbnRnLmdyb3VwKDEpKSwxKSBpZiBpbnRnIGVsc2UgTm9uZSwnbG91ZG5lc3NfcmFuZ2VfbHUnOnJvdW5kKGZsb2F0KGxyLmdyb3VwKDEpKSwxKSBpZiBsciBlbHNlIE5vbmUsJ3BlYWtfZGJmcyc6cm91bmQoZmxvYXQocGsuZ3JvdXAoMSkpLDEpIGlmIHBrIGVsc2UgTm9uZX0gaWYgKGludGcgb3IgcGspIGVsc2UgTm9uZX0Kd2l0aCBvcGVuKCcvdG1wL2ZpbmFsX3Byb2JlLmpzb24nLCd3JykgYXMgZjoKICAgIGpzb24uZHVtcChyZXBvcnQsZixpbmRlbnQ9MikKcHJpbnQoZidSRVNVTFQ6e3JvdW5kKGR1ciwxKX1zfHtsZW4oZ2Fwcyl9Z2Fwc3x7d3BtfXdwbScpCg==' | base64 -d | python3 - "$CID" "$INPUT_FILE"
 
       - name: Upload result to Cloudflare R2
         run: |

@@ -17,7 +17,7 @@ on:
       model_size:
         required: false
         type: string
-        default: 'base'
+        default: 'tiny'
       word_timestamps:
         required: false
         type: string
@@ -60,8 +60,16 @@ jobs:
 
           if [ -n "$AUDIO_URL" ]; then
             echo "Downloading audio from URL..."
-            curl -L --retry 3 --max-time 300 -o /tmp/audio_in/input_audio \
-              "$AUDIO_URL" || { echo "Download failed"; exit 1; }
+            # Extract filename from URL for proper extension detection
+            FILENAME=$(basename "$AUDIO_URL" | cut -d'?' -f1)
+            if [ -n "$FILENAME" ] && [ "$FILENAME" != "download" ]; then
+              curl -L --retry 3 --max-time 300 -o "/tmp/audio_in/$FILENAME" \
+                "$AUDIO_URL" || { echo "Download failed"; exit 1; }
+              ls -lh "/tmp/audio_in/$FILENAME"
+            else
+              curl -L --retry 3 --max-time 300 -o /tmp/audio_in/input_audio \
+                "$AUDIO_URL" || { echo "Download failed"; exit 1; }
+            fi
           elif [ -n "$AUDIO_B64" ]; then
             echo "Decoding base64 audio..."
             echo "$AUDIO_B64" | base64 -d > /tmp/audio_in/input_audio || { echo "Base64 decode failed"; exit 1; }
@@ -70,37 +78,64 @@ jobs:
             exit 1
           fi
 
-          echo "Audio downloaded $(ls -lh /tmp/audio_in/input_audio | awk '{print $5}')"
+          echo "Audio downloaded successfully"
 
-      - name: Detect audio format and convert to 16kHz WAV
+      - name: Detect format and convert to 16kHz WAV
         run: |
-          echo "Detecting audio format..."
-          file /tmp/audio_in/input_audio
-          ffprobe -v quiet -show_format -print_format json /tmp/audio_in/input_audio
+          echo "=== Finding input file ==="
+          INPUT_FILE=$(ls /tmp/audio_in/* 2>/dev/null | head -1)
+          echo "Input: $INPUT_FILE"
 
-          # Get format info for later use
-          FORMAT=$(ffprobe -v quiet -show_format -print_format json /tmp/audio_in/input_audio 2>/dev/null || echo "{}")
-          echo "FORMAT_JSON=$FORMAT" >> $GITHUB_ENV
+          echo "=== File type ==="
+          file "$INPUT_FILE" || true
 
-          # Convert to 16kHz mono WAV for Whisper
-          echo "Converting to 16kHz mono WAV..."
-          ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
-            /tmp/audio_in/converted.wav 2>&1
-          CONV_RESULT=$?
-          if [ $CONV_RESULT -ne 0 ]; then
-            echo "=== First attempt failed, trying with explicit stream copy ==="
-            ffmpeg -y -i /tmp/audio_in/input_audio -vn -c:a copy /tmp/audio_in/stripped 2>&1
-            ffmpeg -y -i /tmp/audio_in/stripped -ar 16000 -ac 1 \
-              /tmp/audio_in/converted.wav 2>&1
-            CONV_RESULT=$?
+          echo "=== FFprobe debug ==="
+          ffprobe -v error -show_format -show_streams -print_format json "$INPUT_FILE" || true
+
+          echo "=== Hex header ==="
+          HEX=$(xxd -l 16 "$INPUT_FILE" 2>/dev/null | head -1 || od -A x -t x1 -N 16 "$INPUT_FILE" 2>/dev/null | head -1)
+          echo "$HEX"
+
+          echo "=== Converting to 16kHz mono WAV ==="
+          # Attempt 1: Normal
+          ffmpeg -y -v error -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+
+          # Attempt 2: Detect via file extension
+          EXT=$(file "$INPUT_FILE" | grep -oiE '(mp3|ogg|opus|wav|flac|aac|m4a|wma|webm|mp4|mov|avi|mkv)' | head -1)
+          if [ -n "$EXT" ]; then
+            cp "$INPUT_FILE" "/tmp/audio_in/input.$EXT"
+            ffmpeg -y -v error -i "/tmp/audio_in/input.$EXT" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
           fi
-          if [ $CONV_RESULT -ne 0 ]; then
-            echo "=== All conversion attempts failed ==="
-            echo "Dumping file info..."
-            hexdump -C /tmp/audio_in/input_audio 2>/dev/null | head -5 || od -c /tmp/audio_in/input_audio 2>/dev/null | head -5
-            exit 1
-          fi
-          echo "Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
+
+          # Attempt 3: Magic bytes
+          case "$HEX" in
+            *"fff"*) cp "$INPUT_FILE" /tmp/audio_in/input.mp3; ffmpeg -y -v error -i /tmp/audio_in/input.mp3 -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"4f676753"*) cp "$INPUT_FILE" /tmp/audio_in/input.ogg; ffmpeg -y -v error -i /tmp/audio_in/input.ogg -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"52494646"*) cp "$INPUT_FILE" /tmp/audio_in/input.wav; ffmpeg -y -v error -i /tmp/audio_in/input.wav -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"664c6143"*) cp "$INPUT_FILE" /tmp/audio_in/input.flac; ffmpeg -y -v error -i /tmp/audio_in/input.flac -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"1a45dfa3"*) cp "$INPUT_FILE" /tmp/audio_in/input.mkv; ffmpeg -y -v error -i /tmp/audio_in/input.mkv -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+            *"66747970"*) cp "$INPUT_FILE" /tmp/audio_in/input.m4a; ffmpeg -y -v error -i /tmp/audio_in/input.m4a -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0 ;;
+          esac
+
+          # Attempt 4: -f auto
+          ffmpeg -y -v error -f auto -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+
+          # Attempt 5: ignore_unknown
+          ffmpeg -y -v error -ignore_unknown -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+
+          # Attempt 6: force wav demuxer
+          ffmpeg -y -v error -f wav -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+
+          # Attempt 7: raw PCM s16le
+          ffmpeg -y -v error -f s16le -ar 44100 -ac 2 -i "$INPUT_FILE" -ar 16000 -ac 1 /tmp/audio_in/converted.wav && echo "OK" && exit 0
+
+          echo "=== ALL CONVERSION ATTEMPTS FAILED ==="
+          ls -la /tmp/audio_in/
+          file "$INPUT_FILE"
+          echo "Hex dump:"
+          xxd "$INPUT_FILE" 2>/dev/null | head -5 || od -A x -t x1z "$INPUT_FILE" 2>/dev/null | head -5
+          echo "File size: $(stat --format=%s "$INPUT_FILE" 2>/dev/null || wc -c < "$INPUT_FILE")"
+          exit 1
 
       - name: Extract detailed audio metadata with FFprobe
         id: audio_metadata
