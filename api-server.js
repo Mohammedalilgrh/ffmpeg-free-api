@@ -113,12 +113,9 @@ function validateKeys(input_files, output_files) {
 // ─────────────────────────────────────────────
 // GITHUB WORKFLOW TRIGGER
 // ─────────────────────────────────────────────
-async function triggerWorkflow(repo, inputs) {
-  const workflowFile = inputs.engine === 'transcribe' ? 'transcribe-audio.yml'
-    : inputs.engine === 'audioprobe' ? 'audio-probe.yml'
-    : 'render-video.yml';
+async function triggerWorkflow(repo, inputs, workflowFile = 'render-video.yml') {
   const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${repo}/actions/workflows/${workflowFile}/dispatches`;
-  log('VIDEO', `Triggering ${workflowFile} on ${repo}`, { worker: repo, engine: inputs.engine || 'ffmpeg' });
+  log('VIDEO', `Triggering ${workflowFile} on ${repo}`, { worker: repo });
 
   try {
     const response = await fetch(url, {
@@ -281,7 +278,7 @@ app.post('/v1/render', authMiddleware, async (req, res) => {
     if (engine === 'remotion') {
       const propsJson = typeof req.body.remotion_props_json === 'string' ? req.body.remotion_props_json : JSON.stringify(req.body.remotion_props_json || {});
       workflowInputs = {
-        engine: 'remotion', remotion_props_json: propsJson,
+        remotion_props_json: propsJson,
         remotion_component_code: req.body.remotion_component_code || '',
         remotion_component_url: req.body.remotion_component_url || '',
         output_files_json: JSON.stringify(output_files),
@@ -303,7 +300,7 @@ app.post('/v1/render', authMiddleware, async (req, res) => {
       }
 
       workflowInputs = {
-        engine: 'ffmpeg', ffmpeg_command,
+        ffmpeg_command,
         input_files_json: JSON.stringify(req.body.input_files || {}),
         output_files_json: JSON.stringify(output_files),
         max_command_run_seconds: String(req.body.max_command_run_seconds || '600'),
@@ -311,7 +308,8 @@ app.post('/v1/render', authMiddleware, async (req, res) => {
       };
     }
 
-    const runId = await triggerWorkflow(repo, workflowInputs);
+    const workflowFile = engine === 'remotion' ? 'render-video.yml' : 'render-video.yml';
+    const runId = await triggerWorkflow(repo, workflowInputs, workflowFile);
     if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
 
     log('SUCCESS', `Job started via /v1/render`, { command_id, engine, worker: repo });
@@ -375,10 +373,10 @@ app.post('/v1/run-ffmpeg-command', authMiddleware, async (req, res) => {
       if (!ffmpeg_command.trim().startsWith('ffmpeg')) {
         ffmpeg_command = 'ffmpeg ' + ffmpeg_command.trim();
       }
-      workflowInputs = { engine: 'ffmpeg', ffmpeg_command, input_files_json: JSON.stringify(input_files), output_files_json: JSON.stringify(output_files), max_command_run_seconds, input_compressed_folder, command_id };
+      workflowInputs = { ffmpeg_command, input_files_json: JSON.stringify(input_files), output_files_json: JSON.stringify(output_files), max_command_run_seconds, input_compressed_folder, command_id };
     }
 
-    const runId = await triggerWorkflow(repo, workflowInputs);
+    const runId = await triggerWorkflow(repo, workflowInputs, 'render-video.yml');
     if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
 
     log('SUCCESS', `Job started`, { command_id, engine, worker: repo });
@@ -536,7 +534,7 @@ app.post('/v1/audio-probe', authMiddleware, async (req, res) => {
       output_files_json: JSON.stringify(output_files), command_id
     };
 
-    const runId = await triggerWorkflow(repo, workflowInputs);
+    const runId = await triggerWorkflow(repo, workflowInputs, 'audio-probe.yml');
     if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
 
     log('SUCCESS', `Audio probe job started`, { command_id, worker: repo });
@@ -604,7 +602,7 @@ app.post('/v1/transcribe', authMiddleware, async (req, res) => {
       command_id
     };
 
-    const runId = await triggerWorkflow(repo, workflowInputs);
+    const runId = await triggerWorkflow(repo, workflowInputs, 'transcribe-audio.yml');
     if (runId) { job.run_id = runId; jobs.set(command_id, job); saveJobs(); }
 
     log('SUCCESS', `Transcribe job started`, { command_id, worker: repo, language, model_size });
