@@ -1,8 +1,3 @@
-# ============================================================================
-# Transcribe Audio Workflow - Speech-to-Text + Audio Analysis
-# ============================================================================
-# Uses: whisper.cpp for fast STT + FFprobe/FFmpeg for audio analysis
-# ============================================================================
 name: Transcribe Audio
 on:
   workflow_dispatch:
@@ -45,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-venv git build-essential
-          echo "✅ System deps installed"
+          echo "System deps installed"
 
       - name: Set up Python + Whisper
         run: |
@@ -53,7 +48,7 @@ jobs:
           source /opt/whisper-env/bin/activate
           pip3 install --quiet --upgrade pip
           pip3 install --quiet openai-whisper tqdm
-          echo "✅ Whisper installed"
+          echo "Whisper installed"
 
       - name: Download audio file
         run: |
@@ -64,22 +59,22 @@ jobs:
           AUDIO_B64="${{ github.event.inputs.audio_base64 }}"
 
           if [ -n "$AUDIO_URL" ]; then
-            echo "📥 Downloading audio from URL..."
+            echo "Downloading audio from URL..."
             curl -L --retry 3 --max-time 300 -o /tmp/audio_in/input_audio \
-              "$AUDIO_URL" || { echo "❌ Download failed"; exit 1; }
+              "$AUDIO_URL" || { echo "Download failed"; exit 1; }
           elif [ -n "$AUDIO_B64" ]; then
-            echo "📥 Decoding base64 audio..."
-            echo "$AUDIO_B64" | base64 -d > /tmp/audio_in/input_audio || { echo "❌ Base64 decode failed"; exit 1; }
+            echo "Decoding base64 audio..."
+            echo "$AUDIO_B64" | base64 -d > /tmp/audio_in/input_audio || { echo "Base64 decode failed"; exit 1; }
           else
-            echo "❌ No audio source provided"
+            echo "No audio source provided"
             exit 1
           fi
 
-          echo "✅ Audio downloaded $(ls -lh /tmp/audio_in/input_audio | awk '{print $5}')"
+          echo "Audio downloaded $(ls -lh /tmp/audio_in/input_audio | awk '{print $5}')"
 
       - name: Detect audio format and convert to 16kHz WAV
         run: |
-          echo "🔍 Detecting audio format..."
+          echo "Detecting audio format..."
           file /tmp/audio_in/input_audio
 
           # Get format info
@@ -87,55 +82,30 @@ jobs:
           echo "FORMAT_JSON=$FORMAT" >> $GITHUB_ENV
 
           # Convert to 16kHz mono WAV for Whisper
-          echo "🔄 Converting to 16kHz mono WAV..."
+          echo "Converting to 16kHz mono WAV..."
           ffmpeg -y -i /tmp/audio_in/input_audio -ar 16000 -ac 1 \
             /tmp/audio_in/converted.wav 2>/dev/null || {
-            echo "❌ Conversion failed"
+            echo "Conversion failed"
             exit 1
           }
-          echo "✅ Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
+          echo "Converted: $(ls -lh /tmp/audio_in/converted.wav | awk '{print $5}')"
 
       - name: Extract detailed audio metadata with FFprobe
         id: audio_metadata
         run: |
-          echo "📊 Extracting audio metadata..."
+          echo "Extracting audio metadata..."
 
           # Full probe info
           ffprobe -v quiet -show_format -show_streams \
             -print_format json /tmp/audio_in/converted.wav > /tmp/audio_metadata.json
 
           # Silence detection
-          echo "🔇 Detecting silence segments..."
+          echo "Detecting silence segments..."
           ffmpeg -i /tmp/audio_in/converted.wav -af silencedetect=noise=-30dB:d=0.3 \
             -f null - 2>&1 | tee /tmp/silence_raw.txt
 
-          # Parse silence into JSON
-          cat > /tmp/parse_silence.py << 'PYEOF'
-import json, re
-
-with open('/tmp/silence_raw.txt') as f:
-    text = f.read()
-
-silence_start = re.findall(r'silence_start:\s*([\d.]+)', text)
-silence_end = re.findall(r'silence_end:\s*([\d.]+)', text)
-silence_duration = re.findall(r'silence_duration:\s*([\d.]+)', text)
-
-silences = []
-for i in range(len(silence_start)):
-    silences.append({
-        "start": round(float(silence_start[i]), 3),
-        "end": round(float(silence_end[i]), 3) if i < len(silence_end) else round(float(silence_start[i]) + 0.3, 3),
-        "duration": round(float(silence_duration[i]), 3) if i < len(silence_duration) else 0.3
-    })
-
-with open('/tmp/silence_gaps.json', 'w') as f:
-    json.dump({"silence_gaps": silences, "total_silence_seconds": round(sum(s["duration"] for s in silences), 3)}, f)
-
-print(f"Found {len(silences)} silence gaps")
-PYEOF
-          python3 /tmp/parse_silence.py
-
-          echo "✅ Audio metadata extracted"
+          # Parse silence using base64-encoded Python
+          echo 'aW1wb3J0IGpzb24sIHJlLCBzeXMKCndpdGggb3BlbignL3RtcC9zaWxlbmNlX3Jhdy50eHQnKSBhcyBmOgogICAgdGV4dCA9IGYucmVhZCgpCgpzaWxlbmNlX3N0YXJ0ID0gcmUuZmluZGFsbChyJ3NpbGVuY2Vfc3RhcnQ6XHMqKFtcZC5dKyknLCB0ZXh0KQpzaWxlbmNlX2VuZCA9IHJlLmZpbmRhbGwocidzaWxlbmNlX2VuZDpccyooW1xkLl0rKScsIHRleHQpCnNpbGVuY2VfZHVyYXRpb24gPSByZS5maW5kYWxsKHInc2lsZW5jZV9kdXJhdGlvbjpccyooW1xkLl0rKScsIHRleHQpCgpzaWxlbmNlcyA9IFtdCmZvciBpIGluIHJhbmdlKGxlbihzaWxlbmNlX3N0YXJ0KSk6CiAgICBzaWxlbmNlcy5hcHBlbmQoewogICAgICAgICJzdGFydCI6IHJvdW5kKGZsb2F0KHNpbGVuY2Vfc3RhcnRbaV0pLCAzKSwKICAgICAgICAiZW5kIjogcm91bmQoZmxvYXQoc2lsZW5jZV9lbmRbaV0pLCAzKSBpZiBpIDwgbGVuKHNpbGVuY2VfZW5kKSBlbHNlIHJvdW5kKGZsb2F0KHNpbGVuY2Vfc3RhcnRbaV0pICsgMC4zLCAzKSwKICAgICAgICAiZHVyYXRpb24iOiByb3VuZChmbG9hdChzaWxlbmNlX2R1cmF0aW9uW2ldKSwgMykgaWYgaSA8IGxlbihzaWxlbmNlX2R1cmF0aW9uKSBlbHNlIDAuMwogICAgfSkKCndpdGggb3BlbignL3RtcC9zaWxlbmNlX2dhcHMuanNvbicsICd3JykgYXMgZjoKICAgIGpzb24uZHVtcCh7InNpbGVuY2VfZ2FwcyI6IHNpbGVuY2VzLCAidG90YWxfc2lsZW5jZV9zZWNvbmRzIjogcm91bmQoc3VtKHNbImR1cmF0aW9uIl0gZm9yIHMgaW4gc2lsZW5jZXMpLCAzKX0sIGYpCgpwcmludChmIkZvdW5kIHtsZW4oc2lsZW5jZXMpfSBzaWxlbmNlIGdhcHMiKQo=' | base64 -d | python3
 
       - name: Run Whisper Speech-to-Text
         id: whisper
@@ -146,162 +116,24 @@ PYEOF
           LANG="${{ github.event.inputs.language }}"
           WORD_TS="${{ github.event.inputs.word_timestamps }}"
 
-          echo "🎤 Running Whisper (model=$MODEL, language=$LANG)..."
-          echo "⚠️ First run downloads the model (~150MB for 'base')"
+          echo "Running Whisper (model=$MODEL, language=$LANG)..."
+          echo "First run downloads the model (~150MB for 'base')"
 
-          WHISPER_ARGS="/tmp/audio_in/converted.wav --model $MODEL --output_dir /tmp/whisper_output --output_format json"
+          echo 'aW1wb3J0IHdoaXNwZXIsIGpzb24sIHN5cwoKbW9kZWxfbmFtZSA9IHN5cy5hcmd2WzFdCmxhbmcgPSBzeXMuYXJndlsyXSBpZiBzeXMuYXJndlsyXSAhPSAnYXV0bycgZWxzZSBOb25lCndvcmRfdHMgPSBzeXMuYXJndlszXS5sb3dlcigpID09ICd0cnVlJwoKbW9kZWwgPSB3aGlzcGVyLmxvYWRfbW9kZWwobW9kZWxfbmFtZSkKCnJlc3VsdCA9IG1vZGVsLnRyYW5zY3JpYmUoCiAgICAnL3RtcC9hdWRpb19pbi9jb252ZXJ0ZWQud2F2JywKICAgIGxhbmd1YWdlPWxhbmcsCiAgICB3b3JkX3RpbWVzdGFtcHM9d29yZF90cywKICAgIHZlcmJvc2U9RmFsc2UKKQoKd2l0aCBvcGVuKCcvdG1wL3doaXNwZXJfcmVzdWx0Lmpzb24nLCAndycpIGFzIGY6CiAgICBqc29uLmR1bXAocmVzdWx0LCBmLCBlbnN1cmVfYXNjaWk9RmFsc2UsIGluZGVudD0yKQoKd29yZHMgPSBbXQpmb3Igc2VnIGluIHJlc3VsdC5nZXQoJ3NlZ21lbnRzJywgW10pOgogICAgZm9yIHcgaW4gc2VnLmdldCgnd29yZHMnLCBbXSk6CiAgICAgICAgd29yZHMuYXBwZW5kKHsKICAgICAgICAgICAgJ3dvcmQnOiB3LmdldCgnd29yZCcsICcnKS5zdHJpcCgpLAogICAgICAgICAgICAnc3RhcnQnOiByb3VuZCh3LmdldCgnc3RhcnQnLCAwKSwgMyksCiAgICAgICAgICAgICdlbmQnOiByb3VuZCh3LmdldCgnZW5kJywgMCksIDMpLAogICAgICAgICAgICAnY29uZmlkZW5jZSc6IHJvdW5kKHcuZ2V0KCdwcm9iYWJpbGl0eScsIHcuZ2V0KCdjb25maWRlbmNlJywgMCkpLCAzKQogICAgICAgIH0pCgppZiBub3Qgd29yZHM6CiAgICBmb3Igc2VnIGluIHJlc3VsdC5nZXQoJ3NlZ21lbnRzJywgW10pOgogICAgICAgIHdvcmRzLmFwcGVuZCh7CiAgICAgICAgICAgICd3b3JkJzogc2VnLmdldCgndGV4dCcsICcnKS5zdHJpcCgpLAogICAgICAgICAgICAnc3RhcnQnOiByb3VuZChzZWcuZ2V0KCdzdGFydCcsIDApLCAzKSwKICAgICAgICAgICAgJ2VuZCc6IHJvdW5kKHNlZy5nZXQoJ2VuZCcsIDApLCAzKSwKICAgICAgICAgICAgJ2NvbmZpZGVuY2UnOiByb3VuZChzZWcuZ2V0KCdjb25maWRlbmNlJywgMCksIDMpCiAgICAgICAgfSkKCmZvciBpLCB3IGluIGVudW1lcmF0ZSh3b3Jkcyk6CiAgICB3WydpbmRleCddID0gaQoKcHJpbnQoZidUcmFuc2NyaWJlZCB7bGVuKHdvcmRzKX0gd29yZHMvc2VnbWVudHMnKQpwcmludChmJ0xhbmd1YWdlIGRldGVjdGVkOiB7cmVzdWx0LmdldCgibGFuZ3VhZ2UiLCAidW5rbm93biIpfScpCnByaW50KGYnRlVMTF9UUkFOU0NSSVBUOiAnICsganNvbi5kdW1wcyhyZXN1bHQuZ2V0KCd0ZXh0JywgJycpLCBlbnN1cmVfYXNjaWk9RmFsc2UpKQoKd2l0aCBvcGVuKCcvdG1wL3dvcmRzX3RpbWVzdGFtcHMuanNvbicsICd3JykgYXMgZjoKICAgIGpzb24uZHVtcCh3b3JkcywgZiwgZW5zdXJlX2FzY2lpPUZhbHNlLCBpbmRlbnQ9MikKCndpdGggb3BlbignL3RtcC9kZXRlY3RlZF9sYW5nLmpzb24nLCAndycpIGFzIGY6CiAgICBqc29uLmR1bXAoeydsYW5ndWFnZSc6IHJlc3VsdC5nZXQoJ2xhbmd1YWdlJywgJycpLCAnc2VnbWVudHMnOiBsZW4ocmVzdWx0LmdldCgnc2VnbWVudHMnLCBbXSkpfSwgZikK' | base64 -d | python3 - "$MODEL" "$LANG" "$WORD_TS" || {
+            echo "Whisper failed";
+            cat /tmp/whisper_result.json 2>/dev/null;
+            exit 1;
+          }
 
-          if [ "$LANG" != "auto" ]; then
-            WHISPER_ARGS="$WHISPER_ARGS --language $LANG"
-          fi
-
-          if [ "$WORD_TS" = "true" ]; then
-            WHISPER_ARGS="$WHISPER_ARGS --word_timestamps True"
-          fi
-
-          # Run whisper
-          python3 -c "
-import whisper, json, sys
-
-model = whisper.load_model('$MODEL')
-lang = None if '$LANG' == 'auto' else '$LANG'
-
-result = model.transcribe(
-    '/tmp/audio_in/converted.wav',
-    language=lang,
-    word_timestamps=$WORD_TS,
-    verbose=False
-)
-
-# Save full result
-with open('/tmp/whisper_result.json', 'w') as f:
-    json.dump(result, f, ensure_ascii=False, indent=2)
-
-# Extract word-level timestamps
-words = []
-for seg in result.get('segments', []):
-    for w in seg.get('words', []):
-        words.append({
-            'word': w.get('word', '').strip(),
-            'start': round(w.get('start', 0), 3),
-            'end': round(w.get('end', 0), 3),
-            'confidence': round(w.get('probability', w.get('confidence', 0)), 3)
-        })
-
-# Also store segment-level if no word timestamps
-if not words:
-    for seg in result.get('segments', []):
-        words.append({
-            'word': seg.get('text', '').strip(),
-            'start': round(seg.get('start', 0), 3),
-            'end': round(seg.get('end', 0), 3),
-            'confidence': round(seg.get('confidence', 0), 3)
-        })
-
-# Running word count for position
-for i, w in enumerate(words):
-    w['index'] = i
-
-print(f'Transcribed {len(words)} words/segments')
-print(f'Language detected: {result.get(\"language\", \"unknown\")}')
-print(f'FULL_TRANSCRIPT: {json.dumps(result[\"text\"], ensure_ascii=False)}')
-
-# Save simplified word list
-with open('/tmp/words_timestamps.json', 'w') as f:
-    json.dump(words, f, ensure_ascii=False, indent=2)
-
-# Save detected language
-with open('/tmp/detected_lang.json', 'w') as f:
-    json.dump({'language': result.get('language', ''), 'segments': len(result.get('segments', []))}, f)
-" 2>&1 || { echo "❌ Whisper failed"; cat /tmp/whisper_result.json 2>/dev/null; exit 1; }
-
-          echo "✅ Transcription complete"
+          echo "Transcription complete"
 
       - name: Build final transcript JSON
         id: build_json
         run: |
-          echo "📦 Building final transcript JSON..."
-
-          cat > /tmp/build_report.py << 'PYEOF'
-import json, os, re
-
-# Load all pieces
-with open('/tmp/audio_metadata.json') as f:
-    audio_info = json.load(f)
-
-with open('/tmp/whisper_result.json') as f:
-    whisper_result = json.load(f)
-
-with open('/tmp/words_timestamps.json') as f:
-    words = json.load(f)
-
-with open('/tmp/silence_gaps.json') as f:
-    silence_data = json.load(f)
-
-with open('/tmp/detected_lang.json') as f:
-    lang_data = json.load(f)
-
-# Extract format info
-fmt = audio_info.get('format', {})
-streams = audio_info.get('streams', [])
-audio_stream = next((s for s in streams if s.get('codec_type') == 'audio'), {})
-
-duration = float(fmt.get('duration', audio_stream.get('duration', 0)))
-
-# Calculate speech metrics
-total_speech = duration - silence_data['total_silence_seconds']
-speaking_rate = len(words) / (total_speech / 60) if total_speech > 0 else 0
-
-# Build segments array
-segments = []
-for seg in whisper_result.get('segments', []):
-    segments.append({
-        'id': seg.get('id', 0),
-        'start': round(seg.get('start', 0), 3),
-        'end': round(seg.get('end', 0), 3),
-        'text': seg.get('text', '').strip(),
-        'confidence': round(seg.get('confidence', 0), 3)
-    })
-
-# Build the final report
-report = {
-    "type": "transcription",
-    "command_id": "${{ github.event.inputs.command_id }}",
-    "transcript": {
-        "full_text": whisper_result.get('text', '').strip(),
-        "language": lang_data.get('language', 'unknown'),
-        "model": "${{ github.event.inputs.model_size }}",
-        "segments": segments,
-        "words": words
-    },
-    "audio_metadata": {
-        "duration_seconds": round(duration, 3),
-        "sample_rate": int(audio_stream.get('sample_rate', 0)),
-        "channels": int(audio_stream.get('channels', 1)),
-        "codec": audio_stream.get('codec_name', 'unknown'),
-        "bit_rate": int(fmt.get('bit_rate', 0)),
-        "format_name": fmt.get('format_name', 'unknown'),
-        "size_bytes": int(fmt.get('size', 0))
-    },
-    "speech_analysis": {
-        "total_words": len(words),
-        "total_speech_seconds": round(total_speech, 3),
-        "total_silence_seconds": round(silence_data['total_silence_seconds'], 3),
-        "speech_to_silence_ratio": round(total_speech / silence_data['total_silence_seconds'], 2) if silence_data['total_silence_seconds'] > 0 else None,
-        "speaking_rate_wpm": round(speaking_rate, 1),
-        "average_word_confidence": round(sum(w.get('confidence', 1) for w in words) / len(words), 3) if words else 0,
-        "silence_gaps": silence_data['silence_gaps']
-    }
-}
-
-# Save final report
-output_path = '/tmp/final_transcript.json'
-with open(output_path, 'w', encoding='utf-8') as f:
-    json.dump(report, f, ensure_ascii=False, indent=2)
-
-print(f"✅ Report built: {len(words)} words, {len(segments)} segments, {round(duration, 1)}s duration")
-PYEOF
-          python3 /tmp/build_report.py
+          echo "Building final transcript JSON..."
+          CID="${{ github.event.inputs.command_id }}"
+          MODEL="${{ github.event.inputs.model_size }}"
+          echo 'aW1wb3J0IGpzb24sIG9zLCByZSwgc3lzCgpjb21tYW5kX2lkID0gc3lzLmFyZ3ZbMV0KbW9kZWxfc2l6ZSA9IHN5cy5hcmd2WzJdCgp3aXRoIG9wZW4oJy90bXAvYXVkaW9fbWV0YWRhdGEuanNvbicpIGFzIGY6CiAgICBhdWRpb19pbmZvID0ganNvbi5sb2FkKGYpCgp3aXRoIG9wZW4oJy90bXAvd2hpc3Blcl9yZXN1bHQuanNvbicpIGFzIGY6CiAgICB3aGlzcGVyX3Jlc3VsdCA9IGpzb24ubG9hZChmKQoKd2l0aCBvcGVuKCcvdG1wL3dvcmRzX3RpbWVzdGFtcHMuanNvbicpIGFzIGY6CiAgICB3b3JkcyA9IGpzb24ubG9hZChmKQoKd2l0aCBvcGVuKCcvdG1wL3NpbGVuY2VfZ2Fwcy5qc29uJykgYXMgZjoKICAgIHNpbGVuY2VfZGF0YSA9IGpzb24ubG9hZChmKQoKd2l0aCBvcGVuKCcvdG1wL2RldGVjdGVkX2xhbmcuanNvbicpIGFzIGY6CiAgICBsYW5nX2RhdGEgPSBqc29uLmxvYWQoZikKCmZtdCA9IGF1ZGlvX2luZm8uZ2V0KCdmb3JtYXQnLCB7fSkKc3RyZWFtcyA9IGF1ZGlvX2luZm8uZ2V0KCdzdHJlYW1zJywgW10pCmF1ZGlvX3N0cmVhbSA9IG5leHQoKHMgZm9yIHMgaW4gc3RyZWFtcyBpZiBzLmdldCgnY29kZWNfdHlwZScpID09ICdhdWRpbycpLCB7fSkKCmR1cmF0aW9uID0gZmxvYXQoZm10LmdldCgnZHVyYXRpb24nLCBhdWRpb19zdHJlYW0uZ2V0KCdkdXJhdGlvbicsIDApKSkKCnRvdGFsX3NwZWVjaCA9IGR1cmF0aW9uIC0gc2lsZW5jZV9kYXRhWyd0b3RhbF9zaWxlbmNlX3NlY29uZHMnXQpzcGVha2luZ19yYXRlID0gbGVuKHdvcmRzKSAvICh0b3RhbF9zcGVlY2ggLyA2MCkgaWYgdG90YWxfc3BlZWNoID4gMCBlbHNlIDAKCnNlZ21lbnRzID0gW10KZm9yIHNlZyBpbiB3aGlzcGVyX3Jlc3VsdC5nZXQoJ3NlZ21lbnRzJywgW10pOgogICAgc2VnbWVudHMuYXBwZW5kKHsKICAgICAgICAnaWQnOiBzZWcuZ2V0KCdpZCcsIDApLAogICAgICAgICdzdGFydCc6IHJvdW5kKHNlZy5nZXQoJ3N0YXJ0JywgMCksIDMpLAogICAgICAgICdlbmQnOiByb3VuZChzZWcuZ2V0KCdlbmQnLCAwKSwgMyksCiAgICAgICAgJ3RleHQnOiBzZWcuZ2V0KCd0ZXh0JywgJycpLnN0cmlwKCksCiAgICAgICAgJ2NvbmZpZGVuY2UnOiByb3VuZChzZWcuZ2V0KCdjb25maWRlbmNlJywgMCksIDMpCiAgICB9KQoKcmVwb3J0ID0gewogICAgInR5cGUiOiAidHJhbnNjcmlwdGlvbiIsCiAgICAiY29tbWFuZF9pZCI6IGNvbW1hbmRfaWQsCiAgICAidHJhbnNjcmlwdCI6IHsKICAgICAgICAiZnVsbF90ZXh0Ijogd2hpc3Blcl9yZXN1bHQuZ2V0KCd0ZXh0JywgJycpLnN0cmlwKCksCiAgICAgICAgImxhbmd1YWdlIjogbGFuZ19kYXRhLmdldCgnbGFuZ3VhZ2UnLCAndW5rbm93bicpLAogICAgICAgICJtb2RlbCI6IG1vZGVsX3NpemUsCiAgICAgICAgInNlZ21lbnRzIjogc2VnbWVudHMsCiAgICAgICAgIndvcmRzIjogd29yZHMKICAgIH0sCiAgICAiYXVkaW9fbWV0YWRhdGEiOiB7CiAgICAgICAgImR1cmF0aW9uX3NlY29uZHMiOiByb3VuZChkdXJhdGlvbiwgMyksCiAgICAgICAgInNhbXBsZV9yYXRlIjogaW50KGF1ZGlvX3N0cmVhbS5nZXQoJ3NhbXBsZV9yYXRlJywgMCkpLAogICAgICAgICJjaGFubmVscyI6IGludChhdWRpb19zdHJlYW0uZ2V0KCdjaGFubmVscycsIDEpKSwKICAgICAgICAiY29kZWMiOiBhdWRpb19zdHJlYW0uZ2V0KCdjb2RlY19uYW1lJywgJ3Vua25vd24nKSwKICAgICAgICAiYml0X3JhdGUiOiBpbnQoZm10LmdldCgnYml0X3JhdGUnLCAwKSksCiAgICAgICAgImZvcm1hdF9uYW1lIjogZm10LmdldCgnZm9ybWF0X25hbWUnLCAndW5rbm93bicpLAogICAgICAgICJzaXplX2J5dGVzIjogaW50KGZtdC5nZXQoJ3NpemUnLCAwKSkKICAgIH0sCiAgICAic3BlZWNoX2FuYWx5c2lzIjogewogICAgICAgICJ0b3RhbF93b3JkcyI6IGxlbih3b3JkcyksCiAgICAgICAgInRvdGFsX3NwZWVjaF9zZWNvbmRzIjogcm91bmQodG90YWxfc3BlZWNoLCAzKSwKICAgICAgICAidG90YWxfc2lsZW5jZV9zZWNvbmRzIjogcm91bmQoc2lsZW5jZV9kYXRhWyd0b3RhbF9zaWxlbmNlX3NlY29uZHMnXSwgMyksCiAgICAgICAgInNwZWVjaF90b19zaWxlbmNlX3JhdGlvIjogcm91bmQodG90YWxfc3BlZWNoIC8gc2lsZW5jZV9kYXRhWyd0b3RhbF9zaWxlbmNlX3NlY29uZHMnXSwgMikgaWYgc2lsZW5jZV9kYXRhWyd0b3RhbF9zaWxlbmNlX3NlY29uZHMnXSA+IDAgZWxzZSBOb25lLAogICAgICAgICJzcGVha2luZ19yYXRlX3dwbSI6IHJvdW5kKHNwZWFraW5nX3JhdGUsIDEpLAogICAgICAgICJhdmVyYWdlX3dvcmRfY29uZmlkZW5jZSI6IHJvdW5kKHN1bSh3LmdldCgnY29uZmlkZW5jZScsIDEpIGZvciB3IGluIHdvcmRzKSAvIGxlbih3b3JkcyksIDMpIGlmIHdvcmRzIGVsc2UgMCwKICAgICAgICAic2lsZW5jZV9nYXBzIjogc2lsZW5jZV9kYXRhWydzaWxlbmNlX2dhcHMnXQogICAgfQp9CgpvdXRwdXRfcGF0aCA9ICcvdG1wL2ZpbmFsX3RyYW5zY3JpcHQuanNvbicKd2l0aCBvcGVuKG91dHB1dF9wYXRoLCAndycsIGVuY29kaW5nPSd1dGYtOCcpIGFzIGY6CiAgICBqc29uLmR1bXAocmVwb3J0LCBmLCBlbnN1cmVfYXNjaWk9RmFsc2UsIGluZGVudD0yKQoKcHJpbnQoZiJSZXBvcnQgYnVpbHQ6IHtsZW4od29yZHMpfSB3b3Jkcywge2xlbihzZWdtZW50cyl9IHNlZ21lbnRzLCB7cm91bmQoZHVyYXRpb24sIDEpfXMgZHVyYXRpb24iKQo=' | base64 -d | python3 - "$CID" "$MODEL"
 
       - name: Upload result to Cloudflare R2
         run: |
@@ -310,7 +142,6 @@ PYEOF
           node -e "
           const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
           const fs = require('fs');
-          const path = require('path');
 
           async function upload() {
             const s3 = new S3Client({
@@ -334,18 +165,17 @@ PYEOF
                 Body: reportData,
                 ContentType: 'application/json'
               }));
-              const url = process.env.R2_PUBLIC_URL.replace(/\\/\$/, '') + '/' + filename;
+              const url = process.env.R2_PUBLIC_URL.replace(/\/\$/, '') + '/' + filename;
               console.log('RESULT_URL_' + key + '=' + url);
-              console.log('✅ Transcript uploaded: ' + url);
+              console.log('Transcript uploaded: ' + url);
             }
 
-            // Also print the first 200 chars of transcript for logs
             const report = JSON.parse(reportData);
             const preview = report.transcript.full_text.substring(0, 200);
-            console.log('📝 TRANSCRIPT_PREVIEW: ' + preview);
-            console.log('📊 WORDS: ' + report.speech_analysis.total_words);
-            console.log('🎯 LANGUAGE: ' + report.transcript.language);
-            console.log('⚡ WPM: ' + report.speech_analysis.speaking_rate_wpm);
+            console.log('TRANSCRIPT_PREVIEW: ' + preview);
+            console.log('WORDS: ' + report.speech_analysis.total_words);
+            console.log('LANGUAGE: ' + report.transcript.language);
+            console.log('WPM: ' + report.speech_analysis.speaking_rate_wpm);
           }
 
           upload().catch(e => { console.error(e); process.exit(1); });
