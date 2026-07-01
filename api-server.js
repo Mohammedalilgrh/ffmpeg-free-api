@@ -246,7 +246,7 @@ async function checkAllProcessingJobs() {
   }));
 }
 
-setInterval(checkAllProcessingJobs, 20000);
+setInterval(checkAllProcessingJobs, 60000);
 
 // ─────────────────────────────────────────────
 // API ENDPOINTS
