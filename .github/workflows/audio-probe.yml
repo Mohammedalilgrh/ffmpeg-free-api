@@ -21,13 +21,11 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    container:
+      image: mohammedaligrh/audio-engine:v1
+      options: --user root
     steps:
       - uses: actions/checkout@v3
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3
 
       - name: Download audio file
         run: |
@@ -107,7 +105,7 @@ jobs:
 
       - name: Upload result to Cloudflare R2
         run: |
-          npm init -y && npm install @aws-sdk/client-s3
+          npm init -y 2>/dev/null; npm install --prefer-offline @aws-sdk/client-s3 2>&1 | tail -1
           node -e "
           const {S3Client,PutObjectCommand}=require('@aws-sdk/client-s3'),fs=require('fs');
           async function u(){

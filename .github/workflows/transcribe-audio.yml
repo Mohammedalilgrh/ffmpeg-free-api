@@ -33,22 +33,11 @@ jobs:
   transcribe:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    container:
+      image: mohammedaligrh/audio-engine:v1
+      options: --user root
     steps:
       - uses: actions/checkout@v3
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-venv git build-essential
-          echo "System deps installed"
-
-      - name: Set up Python + Whisper
-        run: |
-          python3 -m venv /opt/whisper-env
-          source /opt/whisper-env/bin/activate
-          pip3 install --quiet --upgrade pip
-          pip3 install --quiet openai-whisper tqdm
-          echo "Whisper installed"
 
       - name: Download audio file
         run: |
@@ -157,8 +146,6 @@ jobs:
       - name: Run Whisper Speech-to-Text
         id: whisper
         run: |
-          source /opt/whisper-env/bin/activate
-
           MODEL="${{ github.event.inputs.model_size }}"
           LANG="${{ github.event.inputs.language }}"
           WORD_TS="${{ github.event.inputs.word_timestamps }}"
@@ -184,7 +171,7 @@ jobs:
 
       - name: Upload result to Cloudflare R2
         run: |
-          npm init -y && npm install @aws-sdk/client-s3
+          npm init -y 2>/dev/null; npm install --prefer-offline @aws-sdk/client-s3 2>&1 | tail -1
 
           node -e "
           const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');

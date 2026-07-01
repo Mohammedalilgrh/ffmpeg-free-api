@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+# Install system deps (ffmpeg, audio tools, Node.js)
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+    ffmpeg curl unzip ca-certificates xxd && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y -qq nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Pre-install Whisper + PyTorch (the 2-5 min download — done once in the image)
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir openai-whisper tqdm
+
+# Pre-install Node deps for R2 upload (accessible globally via NODE_PATH)
+RUN npm install -g @aws-sdk/client-s3
+
+ENV NODE_PATH=/usr/local/lib/node_modules
+
+WORKDIR /workspace
