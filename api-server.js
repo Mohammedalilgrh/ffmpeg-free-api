@@ -246,7 +246,7 @@ async function checkAllProcessingJobs() {
   }));
 }
 
-setInterval(checkAllProcessingJobs, 60000);
+setInterval(checkAllProcessingJobs, 15000);
 
 // ─────────────────────────────────────────────
 // API ENDPOINTS
@@ -652,7 +652,7 @@ app.listen(PORT, () => {
   console.log(`⚡ Unified endpoint: POST /v1/render`);
   console.log(`🎤 Transcribe endpoint: POST /v1/transcribe`);
   console.log(`📊 Audio Probe endpoint: POST /v1/audio-probe`);
-  console.log(`🔄 Background checker: every 20s (parallel)`);
+  console.log(`🔄 Background checker: every 15s`);
   console.log(`🔑 Auth: x-api-key OR Authorization Bearer`);
 });
 
